@@ -3,20 +3,29 @@ const cors = require("cors");
 const helmet = require("helmet");
 const compression = require("compression");
 const rateLimit = require("express-rate-limit");
-const dotenv = require("dotenv");
 const { connectDb } = require("./configs/connectDb.js");
-
-dotenv.config();
+const { loadConfig } = require("./configs/env.js");
+const { generateSponsorDueReminders } = require("./utils/notificationUtil");
+const { processSponsorReminderEmails } = require("./utils/sponsorReminderService");
+const Admin = require("./models/admin");
+const Sponsorships = require("./models/sponsorships");
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const config = loadConfig();
+const PORT = config.port;
 
-// Reflect the requesting origin so credentialed requests work from any frontend page.
 const corsOptions = {
-  origin: true,
+  origin(origin, callback) {
+    if (!origin || config.allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Origin is not allowed by CORS"));
+  },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
+  exposedHeaders: ["X-Page", "X-Page-Size", "X-Total-Count", "X-Page-Count"],
 };
 
 app.use(cors(corsOptions));
@@ -82,10 +91,80 @@ app.use("/api/newsletter", newsletterRoutes);
 // Error handling middleware (must be last)
 // app.use(errorHandler);
 
+async function checkSponsorReminders() {
+  try {
+    const admins = await Admin.find({ isActive: true }).select("_id");
+    if (!admins.length) {
+      return [];
+    }
+
+    const sponsorships = await Sponsorships.find({
+      status: { $in: ["Active", "Pending"] },
+    })
+      .populate("donor")
+      .sort({ lastPayment: 1, createdAt: -1 });
+
+    const sponsorSummaries = sponsorships.map((sponsorship) => {
+      const donor = sponsorship.donor || {};
+      return {
+        _id: donor._id || sponsorship.donor,
+        profile: donor.profile || {},
+        sponsor: donor.sponsor || {},
+        donation: donor.donation || {
+          amount: sponsorship.amount,
+          period: sponsorship.frequency || "Monthly",
+        },
+        email: donor.profile?.email || donor.email || "",
+        amount: sponsorship.amount,
+        lastPaymentDate: sponsorship.lastPayment || sponsorship.startDate || sponsorship.createdAt,
+        paymentPeriod: sponsorship.frequency || donor.donation?.period || "Monthly",
+        startDate: sponsorship.startDate,
+        frequency: sponsorship.frequency,
+        expectedFundsDate: sponsorship.expectedFundsDate || donor.donation?.expectedFundsDate,
+      };
+    });
+
+    return generateSponsorDueReminders({
+      sponsors: sponsorSummaries,
+      userIds: admins.map((admin) => admin._id),
+      referenceDate: new Date(),
+      dueWindowDays: 7,
+    });
+  } catch (error) {
+    console.error("Sponsor reminder check failed:", error.message);
+    return [];
+  }
+}
+
+let reminderChecksRunning = false;
+
+async function runReminderChecks() {
+  if (reminderChecksRunning) return;
+  reminderChecksRunning = true;
+
+  try {
+    const results = await Promise.allSettled([
+      checkSponsorReminders(),
+      processSponsorReminderEmails(),
+    ]);
+    results.forEach((result) => {
+      if (result.status === "rejected") {
+        console.error("Reminder check failed:", result.reason?.message || result.reason);
+      }
+    });
+  } finally {
+    reminderChecksRunning = false;
+  }
+}
+
 // Connect to DB, then start server
-connectDb(process.env.DB_URL)
+connectDb(config.dbUrl)
   .then(() => {
-    // logger.info(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+    void runReminderChecks();
+    setInterval(() => {
+      void runReminderChecks();
+    }, 60 * 60 * 1000);
+
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
     });

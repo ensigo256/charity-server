@@ -2,6 +2,33 @@ const Profiles = require("../models/childProfile");
 const deleteImage = require("../utils/deleteCloudImg");
 const mongoose = require("mongoose");
 const { calculateGraduation, normalizeStage } = require("../utils/educationGraduation");
+const { getPagination, setPaginationHeaders } = require("../utils/pagination");
+
+const PUBLIC_PROFILE_FIELDS = [
+  "firstName",
+  "secondName",
+  "givenName",
+  "gender",
+  "age",
+  "ageGroup",
+  "class",
+  "nationality",
+  "familyStatus",
+  "numberOfParents",
+  "image.url",
+  "background",
+  "school",
+  "location",
+  "needs",
+  "monthlyNeed",
+  "publicPosterApproved",
+  "sponsorshipStatus",
+  "education.currentLevel",
+  "education.schoolName",
+  "education.currentClass",
+  "education.academicYear",
+  "education.expectedGraduationYear",
+].join(" ");
 
 const normalizeEducation = (education = {}, school = "") => {
   if (!education || typeof education !== "object") {
@@ -163,16 +190,36 @@ exports.updateChildProfile = async (req, res) => {
 
 exports.getProfiles = async (req, res) => {
   try {
-    const profiles = await Profiles.find()
-      .populate("sponsor")
-      .sort({ createdAt: -1 });
+    const pagination = getPagination(req);
+    const [profiles, total] = await Promise.all([
+      Profiles.find()
+        .populate("sponsor")
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(pagination.skip)
+        .limit(pagination.limit),
+      Profiles.countDocuments(),
+    ]);
 
+    setPaginationHeaders(res, { ...pagination, total });
     res.status(200).json(profiles);
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
     console.log("====================================");
     console.log(error);
     console.log("====================================");
+  }
+};
+
+exports.getPublicProfiles = async (_req, res) => {
+  try {
+    const profiles = await Profiles.find({ sponsorshipStatus: "Available" })
+      .select(PUBLIC_PROFILE_FIELDS)
+      .sort({ createdAt: -1, _id: -1 })
+      .lean();
+
+    return res.status(200).json(profiles);
+  } catch (error) {
+    return res.status(500).json({ message: "Unable to load profiles" });
   }
 };
 
@@ -210,6 +257,29 @@ exports.getChildProfileById = async (req, res) => {
     console.log("====================================");
     console.log(error);
     console.log("====================================");
+  }
+};
+
+exports.getPublicChildProfileById = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ message: "Child profile not found" });
+    }
+
+    const profile = await Profiles.findOne({
+      _id: req.params.id,
+      sponsorshipStatus: "Available",
+    })
+      .select(PUBLIC_PROFILE_FIELDS)
+      .lean();
+
+    if (!profile) {
+      return res.status(404).json({ message: "Child profile not found" });
+    }
+
+    return res.status(200).json(profile);
+  } catch (error) {
+    return res.status(500).json({ message: "Unable to load profile" });
   }
 };
 

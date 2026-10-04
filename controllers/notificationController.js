@@ -1,11 +1,6 @@
 const notifUtil = require('../utils/notificationUtil');
 const { validationResult } = require("express-validator");
-
-/**
- * Controller helpers for notifications.  These are very thin wrappers
- * around the utilities so that we can expose a simple REST API if the
- * front-end or other services need to create or query notifications.
- */
+const { getPagination, setPaginationHeaders } = require("../utils/pagination");
 
 exports.createNotification = async (req, res) => {
   try {
@@ -14,39 +9,68 @@ exports.createNotification = async (req, res) => {
       return res.status(400).json({ message: "Validation errors", errors: errors.array() });
     }
 
-    const { type, title, description, linkTo } = req.body;
+    const { type, title, description, linkTo, userId, status, scheduledFor, relatedEntityType, relatedEntityId } = req.body;
+    const targetUserId = userId || req.admin?.id || req.admin?._id;
 
-    const notification = await notifUtil.createNotification({ type, title, description, linkTo });
+    if (!targetUserId) {
+      return res.status(400).json({ message: "A userId is required to create a notification" });
+    }
 
-    // logger.info(`Notification created: ${notification._id} - ${title}`);
+    const notification = await notifUtil.createNotification({
+      userId: targetUserId,
+      type,
+      title,
+      description,
+      linkTo,
+      status,
+      scheduledFor,
+      relatedEntityType,
+      relatedEntityId,
+    });
+
     res.status(201).json(notification);
-
   } catch (err) {
-    // logger.error('Error creating notification:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
 exports.getNotifications = async (req, res) => {
   try {
-    const filter = {};
-    if (req.query.seen !== undefined) {
-      filter.seen = req.query.seen === 'true';
-    }
-    if (req.query.type) {
-      filter.type = req.query.type;
-    }
-    if (req.query.limit) {
-      filter.limit = parseInt(req.query.limit, 10);
+    const userId = req.admin?.id || req.admin?._id;
+    if (!userId) {
+      return res.status(401).json({ message: 'Authentication required' });
     }
 
-    const notifications = await notifUtil.getNotifications(filter);
+    const filter = {
+      userId,
+      type: req.query.type || undefined,
+      status: req.query.status && req.query.status !== 'all' ? req.query.status : undefined,
+    };
 
-    // logger.info(`Retrieved ${notifications.length} notifications`);
+    const pagination = getPagination(req);
+    const { items: notifications, total } = await notifUtil.getNotifications({
+      ...filter,
+      ...pagination,
+      withMeta: true,
+    });
+
+    setPaginationHeaders(res, { ...pagination, total });
     res.status(200).json(notifications);
-
   } catch (err) {
-    // logger.error('Error fetching notifications:', err);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+exports.getUnreadCount = async (req, res) => {
+  try {
+    const userId = req.admin?.id || req.admin?._id;
+    if (!userId) {
+      return res.status(401).json({ message: 'Authentication required' });
+    }
+
+    const count = await notifUtil.getUnreadCount(userId);
+    res.status(200).json({ count });
+  } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
@@ -59,16 +83,78 @@ exports.markAsSeen = async (req, res) => {
     }
 
     const { id } = req.params;
-    const updated = await notifUtil.markAsSeen(id);
+    const userId = req.admin?.id || req.admin?._id;
+    const updated = await notifUtil.markAsSeen(id, userId);
 
     if (!updated) {
       return res.status(404).json({ message: 'Notification not found' });
     }
 
-    // logger.info(`Notification marked as seen: ${id}`);
     res.status(200).json(updated);
-
   } catch (err) {
-    // logger.error('Error marking notification as seen:', err);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+exports.markAsRead = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ message: "Validation errors", errors: errors.array() });
+    }
+
+    const { id } = req.params;
+    const userId = req.admin?.id || req.admin?._id;
+    const updated = await notifUtil.markAsRead(id, userId);
+
+    if (!updated) {
+      return res.status(404).json({ message: 'Notification not found' });
+    }
+
+    res.status(200).json(updated);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+exports.archiveNotification = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ message: "Validation errors", errors: errors.array() });
+    }
+
+    const { id } = req.params;
+    const userId = req.admin?.id || req.admin?._id;
+    const updated = await notifUtil.archiveNotification(id, userId);
+
+    if (!updated) {
+      return res.status(404).json({ message: 'Notification not found' });
+    }
+
+    res.status(200).json(updated);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+exports.deleteNotification = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ message: "Validation errors", errors: errors.array() });
+    }
+
+    const { id } = req.params;
+    const userId = req.admin?.id || req.admin?._id;
+    const updated = await notifUtil.deleteNotification(id, userId);
+
+    if (!updated) {
+      return res.status(404).json({ message: 'Notification not found' });
+    }
+
+    res.status(200).json(updated);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
   }
 };

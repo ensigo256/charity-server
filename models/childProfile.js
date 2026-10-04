@@ -74,6 +74,7 @@ const childrenProfilesSchema = new mongoose.Schema(
     sponsor: { type: mongoose.Schema.Types.ObjectId, ref: 'Sponsor' },
     school: { type: String, trim: true },
     monthlyNeed: { type: Number, trim: true },
+    publicPosterApproved: { type: Boolean, default: false },
     education: {
       type: educationSchema,
       default: {
@@ -99,6 +100,9 @@ const childrenProfilesSchema = new mongoose.Schema(
 
   { timestamps: true },
 );
+childrenProfilesSchema.index({ createdAt: -1, _id: -1 });
+childrenProfilesSchema.index({ sponsorshipStatus: 1, createdAt: -1, _id: -1 });
+childrenProfilesSchema.index({ sponsor: 1, createdAt: -1, _id: -1 });
 
 childrenProfilesSchema.pre('save', function(next) {
   next();

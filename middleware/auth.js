@@ -1,4 +1,6 @@
 const jwt = require("jsonwebtoken");
+const Admin = require("../models/admin");
+const AdminSession = require("../models/adminSession");
 
 const permissions = {
   developer: new Set([
@@ -23,6 +25,9 @@ const permissions = {
     "messages.view",
     "messages.manage",
     "newsletter.view",
+    "notifications.view",
+    "notifications.manage",
+    "comments.manage",
     "data.export",
     "users.manage",
   ]),
@@ -47,7 +52,7 @@ const permissions = {
   ]),
 };
 
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const authorization = req.headers.authorization || "";
   const token = authorization.startsWith("Bearer ")
     ? authorization.slice(7)
@@ -58,7 +63,33 @@ function requireAuth(req, res, next) {
   }
 
   try {
-    req.admin = jwt.verify(token, process.env.JWT_SECRET);
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    if (payload.type !== "access" || !payload.sessionId) {
+      return res.status(401).json({ message: "Invalid access token" });
+    }
+
+    const [admin, session] = await Promise.all([
+      Admin.findById(payload.id).select("_id role isActive"),
+      AdminSession.findOne({
+        sessionId: payload.sessionId,
+        admin: payload.id,
+        revokedAt: null,
+        loggedOutAt: null,
+        expiresAt: { $gt: new Date() },
+      }).select("_id lastActivityAt"),
+    ]);
+    if (!admin || admin.isActive === false || !session) {
+      return res.status(401).json({ message: "Session is no longer valid" });
+    }
+
+    req.admin = { ...payload, role: admin.role };
+    const activityCutoff = new Date(Date.now() - 60 * 1000);
+    if (!session.lastActivityAt || session.lastActivityAt < activityCutoff) {
+      void AdminSession.updateOne(
+        { _id: session._id, lastActivityAt: { $lt: activityCutoff } },
+        { $set: { lastActivityAt: new Date() } },
+      ).catch(() => {});
+    }
     return next();
   } catch {
     return res.status(401).json({ message: "Invalid or expired token" });

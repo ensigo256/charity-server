@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const Subscriber = require('../models/subscriber');
 const { sendNewsletterWelcomeEmail } = require('../utils/mail');
+const { getPagination, setPaginationHeaders } = require('../utils/pagination');
+const notifUtil = require('../utils/notificationUtil');
 
 const VERIFICATION_TOKEN_TTL_MS = Number(process.env.NEWSLETTER_VERIFICATION_TTL_HOURS || 24) * 60 * 60 * 1000;
 const RESEND_COOLDOWN_MS = Number(process.env.NEWSLETTER_RESEND_COOLDOWN_SECONDS || 300) * 1000;
@@ -101,6 +103,10 @@ exports.subscribeToNewsletter = async (req, res) => {
     if (name && !subscriber.name) subscriber.name = name;
 
     const updatedSubscriber = await issueVerification(subscriber);
+
+    notifUtil.notifyNewsletterSubscription({ subscriber: updatedSubscriber }).catch((error) => {
+      console.error('Newsletter notification failed:', error.message);
+    });
 
     return res.status(existingSubscriber ? 200 : 201).json({
       message: 'A verification email has been sent to confirm your subscription.',
@@ -203,9 +209,16 @@ exports.verifyNewsletterSubscription = async (req, res) => {
 exports.getNewsletterSubscribers = async (req, res) => {
   try {
     requireDatabase();
-    const subscribers = await Subscriber.find()
-      .sort({ subscribedOn: -1 })
-      .select('-__v -verificationToken -verificationTokenExpiresAt -unsubscribeToken');
+    const pagination = getPagination(req);
+    const [subscribers, total] = await Promise.all([
+      Subscriber.find()
+        .sort({ subscribedOn: -1, _id: -1 })
+        .skip(pagination.skip)
+        .limit(pagination.limit)
+        .select('-__v -verificationToken -verificationTokenExpiresAt -unsubscribeToken'),
+      Subscriber.countDocuments(),
+    ]);
+    setPaginationHeaders(res, { ...pagination, total });
     return res.status(200).json(subscribers);
   } catch (error) {
     console.error('Get newsletter subscribers error:', error);

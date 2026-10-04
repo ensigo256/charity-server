@@ -1,5 +1,6 @@
 const Gallery = require("../models/gallery");
 const DeleteImageFromCloudinary = require("../utils/deleteCloudImg");
+const { getPagination, setPaginationHeaders } = require("../utils/pagination");
 exports.createGalleryItem = async (req, res) => {
   try {
     const { title, category, featured, image, imageUrl } = req.body;
@@ -25,7 +26,15 @@ exports.createGalleryItem = async (req, res) => {
 
 exports.getAllGalleryItems = async (req, res) => {
   try {
-    const gallery = await Gallery.find().sort({ createdAt: -1 });
+    const pagination = getPagination(req);
+    const [gallery, total] = await Promise.all([
+      Gallery.find()
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(pagination.skip)
+        .limit(pagination.limit),
+      Gallery.countDocuments(),
+    ]);
+    setPaginationHeaders(res, { ...pagination, total });
     res.status(200).json(gallery);
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });

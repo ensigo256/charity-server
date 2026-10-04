@@ -1,6 +1,8 @@
 const Messages = require("../models/message");
 const { validationResult } = require("express-validator");
 const { sendContactEmails, sendReplyEmail } = require("../utils/mail");
+const { getPagination, setPaginationHeaders } = require("../utils/pagination");
+const notifUtil = require("../utils/notificationUtil");
 
 
 
@@ -26,6 +28,10 @@ exports.createMessage = async (req, res) => {
 
         await newMessage.save();
 
+        notifUtil.notifyNewMessage(newMessage).catch((error) => {
+            console.error("Failed to create message notification:", error.message);
+        });
+
         const emailResult = await sendContactEmails(newMessage).catch((error) => {
             console.error("Message saved, but contact emails failed:", error.message);
             return { sent: false, error: error.message };
@@ -46,10 +52,17 @@ exports.createMessage = async (req, res) => {
 
 exports.getMessages = async (req, res) => {
     try {
-        const messages = await Messages.find()
-            .sort({ createdAt: -1 })
-            .select('-__v');
+        const pagination = getPagination(req);
+        const [messages, total] = await Promise.all([
+            Messages.find()
+                .sort({ createdAt: -1, _id: -1 })
+                .skip(pagination.skip)
+                .limit(pagination.limit)
+                .select('-__v'),
+            Messages.countDocuments(),
+        ]);
 
+        setPaginationHeaders(res, { ...pagination, total });
         res.status(200).json(messages);
 
     } catch (error) {

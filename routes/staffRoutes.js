@@ -17,7 +17,7 @@ router.post(
   createStaff,
 );
 
-router.get("/all", getStaff);
+router.get("/all", requireAuth, requirePermission("staff.view"), getStaff);
 
 router.delete(
   "/delete/:id",

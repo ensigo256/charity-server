@@ -2,21 +2,21 @@
   "name": "charity-server",
   "version": "1.0.0",
   "description": "",
-  "repository": {
-     
-  },
+  "repository": {},
   "license": "ISC",
   "author": "jonathan",
   "type": "commonjs",
   "main": "server.js",
- "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+  "scripts": {
+    "test": "node --test",
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "prod": "NODE_ENV=production node server.js"
+    "prod": "NODE_ENV=production node server.js",
+    "db:indexes": "node scripts/createIndexes.js",
+    "db:migrate:sponsor-reminders": "node scripts/enableSponsorEmailReminders.js"
   },
-  "dependencies":{
-     "axios": "^1.9.0",
+  "dependencies": {
+    "axios": "^1.9.0",
     "bcryptjs": "^3.0.2",
     "body-parser": "^2.2.0",
     "cloudinary": "^2.6.0",
@@ -34,9 +34,11 @@
     "nodemailer": "^7.0.2",
     "pg": "^8.16.3",
     "postgres": "^3.4.7",
+    "resend": "^6.32.0",
     "socket.io": "^4.8.1",
     "winston": "^3.11.0"
-  },"devDependencies": {
+  },
+  "devDependencies": {
     "nodemon": "^3.1.10"
   }
 }

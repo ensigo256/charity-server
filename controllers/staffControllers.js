@@ -1,6 +1,7 @@
 const Staff = require("../models/staff");
 const DeleteImage = require("../utils/deleteCloudImg");
 const { validationResult } = require("express-validator");
+const { getPagination, setPaginationHeaders } = require("../utils/pagination");
 // const notifUtil = require('../utils/notificationUtil');
 
  
@@ -37,14 +38,22 @@ exports.createStaff = async (req, res) => {
 
 exports.getStaff = async (req, res) => {
     try {
-        const staff = await Staff.find()
-            .sort({ createdAt: -1 })
-            .select('-__v');
+        const pagination = getPagination(req);
+        const [staff, total] = await Promise.all([
+            Staff.find()
+                .sort({ createdAt: -1, _id: -1 })
+                .skip(pagination.skip)
+                .limit(pagination.limit)
+                .select('-__v'),
+            Staff.countDocuments(),
+        ]);
 
         if (!staff || staff.length === 0) {
-            return res.status(404).json({ message: "No staff members found" });
+            setPaginationHeaders(res, { ...pagination, total });
+            return res.status(200).json([]);
         }
 
+        setPaginationHeaders(res, { ...pagination, total });
         // logger.info(`Retrieved ${staff.length} staff members`);
         res.status(200).json(staff);
 

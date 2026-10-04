@@ -4,13 +4,18 @@ const { body, param } = require("express-validator");
 const {
   createChildProfile,
   getProfiles,
+  getPublicProfiles,
   getChildProfileById,
+  getPublicChildProfileById,
   updateChildProfile,
   deleteChildProfile,
   addReportCard,
   deleteReportCard,
 } = require("../controllers/childProfileControllers");
 const { requireAuth, requirePermission } = require("../middleware/auth");
+
+router.get("/public/profiles", getPublicProfiles);
+router.get("/public/profile/:id", getPublicChildProfileById);
 
 // Create a new child profile
 router.post(
@@ -29,7 +34,7 @@ router.put(
 );
 
 // Get all child profiles
-router.get("/profiles", getProfiles);
+router.get("/profiles", requireAuth, requirePermission("children.view"), getProfiles);
 
 //delete child profile
 router.delete(
@@ -54,6 +59,11 @@ router.delete(
 );
 
 // Get a child profile by ID
-router.get("/profile/:id", getChildProfileById);
+router.get(
+  "/profile/:id",
+  requireAuth,
+  requirePermission("children.view"),
+  getChildProfileById,
+);
 
 module.exports = router;

@@ -1,7 +1,8 @@
 const Blogs = require("../models/blog");
 const DeleteImage = require("../utils/deleteCloudImg");
 const { validationResult } = require("express-validator");
-// const notifUtil = require('../utils/notificationUtil');
+const { getPagination, setPaginationHeaders } = require("../utils/pagination");
+const notifUtil = require('../utils/notificationUtil');
 
  
 
@@ -49,14 +50,23 @@ exports.createBlog = async (req, res) => {
 
 exports.getBlogs = async (req, res) => {
     try {
-        const blogs = await Blogs.find()
-            .sort({ createdAt: -1 }).populate('comments')
-            .select('-__v'); // Exclude version field
+        const pagination = getPagination(req);
+        const [blogs, total] = await Promise.all([
+            Blogs.find()
+                .sort({ createdAt: -1, _id: -1 })
+                .skip(pagination.skip)
+                .limit(pagination.limit)
+                .populate('comments')
+                .select('-__v'),
+            Blogs.countDocuments(),
+        ]);
 
         if (!blogs || blogs.length === 0) {
-            return res.status(404).json({ message: "No blogs found" });
+            setPaginationHeaders(res, { ...pagination, total });
+            return res.status(200).json([]);
         }
 
+        setPaginationHeaders(res, { ...pagination, total });
         // logger.info(`Retrieved ${blogs.length} blogs`);
         res.status(200).json(blogs);
 
@@ -223,6 +233,12 @@ exports.likeToggle = async (req, res) => {
         } else {
             blog.likes.push(uuid);
             message = "Blog liked successfully";
+            notifUtil.notifyBlogLike({
+                blog,
+                actorName: "A visitor",
+            }).catch((error) => {
+                console.error('Blog like notification failed:', error.message);
+            });
         }
 
         await blog.save();
@@ -257,6 +273,13 @@ exports.shareToggle = async (req, res) => {
 
         blog.shares.push(uuid);
         await blog.save();
+
+        notifUtil.notifyBlogShare({
+            blog,
+            actorName: "A visitor",
+        }).catch((error) => {
+            console.error('Blog share notification failed:', error.message);
+        });
 
         // logger.info(`Blog shared: ${blogId} by ${uuid}`);
         res.status(200).json({

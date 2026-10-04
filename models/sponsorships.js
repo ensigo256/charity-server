@@ -12,9 +12,13 @@ const sponsorshipsSchema = new mongoose.Schema(
       ref: "Sponsor",
       required: true,
     },
+    publicPledgeReference: { type: String, trim: true, sparse: true },
+    publicRequestId: { type: String, trim: true, sparse: true },
+    bankReference: { type: String, trim: true, sparse: true },
     startDate: { type: Date, required: true },
     endDate: { type: Date },
     amount: { type: Number, required: true },
+    currency: { type: String, trim: true, default: "USD" },
     frequency: {
       type: String,
       enum: ["Monthly", "3 Months", "6 Months", "Yearly"],
@@ -58,12 +62,20 @@ const sponsorshipsSchema = new mongoose.Schema(
       },
     ],
     lastPayment: { type: Date },
+    expectedFundsDate: { type: Date, default: null },
     totalPaid: { type: Number, default: 0 },
     notes: { type: String, trim: true },
   },
 
   { timestamps: true },
 );
+sponsorshipsSchema.index({ createdAt: -1, _id: -1 });
+sponsorshipsSchema.index({ donor: 1, createdAt: -1, _id: -1 });
+sponsorshipsSchema.index({ child: 1, createdAt: -1, _id: -1 });
+sponsorshipsSchema.index({ status: 1, createdAt: -1, _id: -1 });
+sponsorshipsSchema.index({ publicPledgeReference: 1 }, { unique: true, sparse: true });
+sponsorshipsSchema.index({ publicRequestId: 1 }, { unique: true, sparse: true });
+sponsorshipsSchema.index({ bankReference: 1 }, { unique: true, sparse: true });
 const Sponsorships = mongoose.model("Sponsorships", sponsorshipsSchema);
 
 module.exports = Sponsorships;

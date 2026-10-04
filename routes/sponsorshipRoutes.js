@@ -1,8 +1,12 @@
 const Express = require("express");
 const router = Express.Router();
+const rateLimit = require("express-rate-limit");
 const { body, param } = require("express-validator");
 const {
   createSponsor,
+  createPublicPledge,
+  confirmPublicAchPledge,
+  cancelPublicPledge,
   getSponsorRecords,
   getSponsorById,
   createPaymentRecord,
@@ -15,8 +19,30 @@ const {
   archiveSponsorProfile,
   unlinkChildSponsor,
   recordSplitPayment,
+  checkSponsorReminderNotifications,
 } = require("../controllers/sponsorControllers");
 const { requireAuth, requirePermission } = require("../middleware/auth");
+const publicPledgeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many pledge attempts. Please try again later." },
+});
+
+router.post("/public/pledges", publicPledgeLimiter, createPublicPledge);
+router.post(
+  "/public/pledges/:id/confirm-ach",
+  requireAuth,
+  requirePermission("sponsorships.manage"),
+  confirmPublicAchPledge,
+);
+router.post(
+  "/public/pledges/:id/cancel",
+  requireAuth,
+  requirePermission("sponsorships.manage"),
+  cancelPublicPledge,
+);
 // Create a new sponsor
 router.post(
   "/profile/new",
@@ -42,19 +68,44 @@ router.delete(
 );
 
 // Get all sponsor records
-router.get("/sponsorship/records", getSponsorRecords);
+router.get(
+  "/sponsorship/records",
+  requireAuth,
+  requirePermission("sponsorships.view"),
+  getSponsorRecords,
+);
 
 // Get all sponsor profiles
-router.get("/profiles/all", getProfiles);
+router.get(
+  "/profiles/all",
+  requireAuth,
+  requirePermission("sponsorships.view"),
+  getProfiles,
+);
 
 // Get sponsor assignment records for a child
-router.get("/child/:childId", getChildSponsor);
+router.get(
+  "/child/:childId",
+  requireAuth,
+  requirePermission("sponsorships.view"),
+  getChildSponsor,
+);
 
 // Get sponsored children for a sponsor
-router.get("/:id/children", getSponsorChildren);
+router.get(
+  "/:id/children",
+  requireAuth,
+  requirePermission("sponsorships.view"),
+  getSponsorChildren,
+);
 
 // Get sponsor by id including child relationship summary
-router.get("/:id", getSponsorById);
+router.get(
+  "/:id",
+  requireAuth,
+  requirePermission("sponsorships.view"),
+  getSponsorById,
+);
 
 // Unlink a child from its current sponsor while preserving sponsorship history
 router.patch(
@@ -72,8 +123,20 @@ router.post(
   recordSplitPayment,
 );
 
+router.post(
+  "/due-reminders/check",
+  requireAuth,
+  requirePermission("sponsorships.manage"),
+  checkSponsorReminderNotifications,
+);
+
 // Update sponsorship lifecycle status
-router.patch("/sponsorship/:id/status", updateSponsorshipStatus);
+router.patch(
+  "/sponsorship/:id/status",
+  requireAuth,
+  requirePermission("sponsorships.manage"),
+  updateSponsorshipStatus,
+);
 
 // Reassign a sponsor to a child
 router.patch(

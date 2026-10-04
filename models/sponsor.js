@@ -40,7 +40,8 @@ const sponsorsSchema = new mongoose.Schema(
         enum: ["Monthly", "3 Months", "6 Months", "Yearly"],
         required: true,
       },
-      remindByEmail: { type: Boolean, default: false },
+      expectedFundsDate: { type: Date, default: null },
+      remindByEmail: { type: Boolean, default: true },
     },
     paymentMethod: {
       type: String,
@@ -56,6 +57,11 @@ const sponsorsSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    reminderPreferenceInitializedAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
     archivedAt: {
       type: Date,
       default: null,
@@ -69,6 +75,8 @@ const sponsorsSchema = new mongoose.Schema(
 
   { timestamps: true },
 );
+sponsorsSchema.index({ isArchived: 1, createdAt: -1, _id: -1 });
+sponsorsSchema.index({ child: 1, createdAt: -1, _id: -1 });
 const Sponsor = mongoose.model("Sponsor", sponsorsSchema);
 
 module.exports = Sponsor;

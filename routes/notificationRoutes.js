@@ -2,25 +2,38 @@ const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/notificationController');
 const { body, param, query } = require('express-validator');
+const { requireAuth, requirePermission } = require('../middleware/auth');
 
-// POST /notifications        -> create a new notification
-router.post('/', [
+router.post('/', requireAuth, requirePermission('notifications.manage'), [
   body('type').isString().notEmpty().withMessage('Type is required'),
   body('title').isString().notEmpty().withMessage('Title is required'),
   body('description').isString().notEmpty().withMessage('Description is required'),
-  body('linkTo').optional().isString().withMessage('LinkTo must be a string')
+  body('userId').optional().isMongoId().withMessage('User ID must be valid'),
+  body('linkTo').optional().isString().withMessage('LinkTo must be a string'),
 ], controller.createNotification);
 
-// GET /notifications         -> list notifications (optional filters via query)
-router.get('/', [
-  query('seen').optional().isBoolean().withMessage('Seen must be a boolean'),
+router.get('/', requireAuth, requirePermission('notifications.view'), [
+  query('status').optional().isString().withMessage('Status must be a string'),
   query('type').optional().isString().withMessage('Type must be a string'),
-  query('limit').optional().isInt({ min: 1 }).withMessage('Limit must be a positive integer')
+  query('limit').optional().isInt({ min: 1 }).withMessage('Limit must be a positive integer'),
 ], controller.getNotifications);
 
-// PATCH /notifications/:id/seen -> mark a notification as seen
-router.patch('/:id/seen', [
-  param('id').isMongoId().withMessage('Invalid notification ID')
+router.get('/unread-count', requireAuth, requirePermission('notifications.view'), controller.getUnreadCount);
+
+router.patch('/:id/read', requireAuth, requirePermission('notifications.view'), [
+  param('id').isMongoId().withMessage('Invalid notification ID'),
+], controller.markAsRead);
+
+router.patch('/:id/archive', requireAuth, requirePermission('notifications.view'), [
+  param('id').isMongoId().withMessage('Invalid notification ID'),
+], controller.archiveNotification);
+
+router.delete('/:id', requireAuth, requirePermission('notifications.manage'), [
+  param('id').isMongoId().withMessage('Invalid notification ID'),
+], controller.deleteNotification);
+
+router.patch('/:id/seen', requireAuth, requirePermission('notifications.view'), [
+  param('id').isMongoId().withMessage('Invalid notification ID'),
 ], controller.markAsSeen);
 
 module.exports = router;

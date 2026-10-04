@@ -22,6 +22,8 @@ const eventsSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+eventsSchema.index({ createdAt: -1, _id: -1 });
+eventsSchema.index({ status: 1, createdAt: -1, _id: -1 });
 const Events = mongoose.model("Event", eventsSchema);
 
 module.exports = Events;

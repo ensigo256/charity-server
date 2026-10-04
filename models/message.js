@@ -14,6 +14,8 @@ const messagesSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+messagesSchema.index({ createdAt: -1, _id: -1 });
+messagesSchema.index({ isRead: 1, isArchived: 1, createdAt: -1, _id: -1 });
 const Messages = mongoose.model("Message", messagesSchema);
 
 module.exports = Messages;

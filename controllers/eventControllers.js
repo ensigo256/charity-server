@@ -1,6 +1,7 @@
 const Events = require("../models/event");
 const DeleteImage = require("../utils/deleteCloudImg");
 const { validationResult } = require("express-validator");
+const { getPagination, setPaginationHeaders } = require("../utils/pagination");
 // const notifUtil = require('../utils/notificationUtil');
 
 exports.createEvent = async (req, res) => {
@@ -45,12 +46,21 @@ exports.createEvent = async (req, res) => {
 
 exports.getEvents = async (req, res) => {
   try {
-    const events = await Events.find().sort({ createdAt: -1 });
+    const pagination = getPagination(req);
+    const [events, total] = await Promise.all([
+      Events.find()
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(pagination.skip)
+        .limit(pagination.limit),
+      Events.countDocuments(),
+    ]);
 
     if (!events || events.length === 0) {
-      return res.status(404).json({ message: "No events found" });
+      setPaginationHeaders(res, { ...pagination, total });
+      return res.status(200).json([]);
     }
 
+    setPaginationHeaders(res, { ...pagination, total });
     // logger.info(`Retrieved ${events.length} events`);
     res.status(200).json(events);
   } catch (error) {

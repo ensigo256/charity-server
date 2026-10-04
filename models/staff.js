@@ -17,6 +17,8 @@ const staffSchema = new mongoose.Schema(
     },
   { timestamps: true }
 );
+staffSchema.index({ createdAt: -1, _id: -1 });
+staffSchema.index({ status: 1, createdAt: -1, _id: -1 });
 const Staff = mongoose.model("Staff", staffSchema);
 
 module.exports = Staff;

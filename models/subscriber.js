@@ -21,6 +21,7 @@ const subscribersSchema = new mongoose.Schema(
 subscribersSchema.index({ verificationToken: 1 }, { sparse: true });
 subscribersSchema.index({ unsubscribeToken: 1 }, { sparse: true });
 subscribersSchema.index({ subscribedOn: -1 });
+subscribersSchema.index({ status: 1, subscribedOn: -1, _id: -1 });
 
 const Subscriber = mongoose.model("Subscriber", subscribersSchema);
 
