@@ -50,6 +50,20 @@ app.use(limiter);
 // Compression
 app.use(compression());
 
+app.post(
+  "/api/sponsors/stripe/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    try {
+      const { handleStripeWebhook } = require("./controllers/sponsorControllers");
+      await handleStripeWebhook(req, res);
+    } catch (error) {
+      console.error("Stripe webhook route failed:", error);
+      res.status(500).json({ message: "Stripe webhook failed." });
+    }
+  },
+);
+
 // parse JSON request bodies
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));

@@ -5,6 +5,7 @@ const { body, param } = require("express-validator");
 const {
   createSponsor,
   createPublicPledge,
+  createStripeCheckoutSession,
   confirmPublicAchPledge,
   cancelPublicPledge,
   getSponsorRecords,
@@ -31,6 +32,7 @@ const publicPledgeLimiter = rateLimit({
 });
 
 router.post("/public/pledges", publicPledgeLimiter, createPublicPledge);
+router.post("/stripe/create-session", createStripeCheckoutSession);
 router.post(
   "/public/pledges/:id/confirm-ach",
   requireAuth,

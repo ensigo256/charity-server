@@ -3,13 +3,20 @@ const Childern = require("../models/childProfile");
 const Sponsor = require("../models/sponsor");
 const Sponsorships = require("../models/sponsorships");
 const Admin = require("../models/admin");
+const Notification = require("../models/notification");
 const deleteImage = require("../utils/deleteCloudImg");
 const mongoose = require("mongoose");
+const { sendEmail } = require("../utils/mail");
+const { buildStripeCheckoutSessionData } = require("../utils/stripeCheckout");
 const { getPagination, setPaginationHeaders } = require("../utils/pagination");
 const {
   generateSponsorDueReminders,
   calculateNextPaymentDate,
 } = require("../utils/notificationUtil");
+
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? require("stripe")(process.env.STRIPE_SECRET_KEY)
+  : null;
 
 const ACTIVE_SPONSORSHIP_STATUSES = ["Active", "Pending"];
 const CLOSING_SPONSORSHIP_STATUSES = ["Completed", "Cancelled", "Paused"];
@@ -65,6 +72,13 @@ const getAchInstructions = () => {
 
   return Object.values(instructions).every(Boolean) ? instructions : null;
 };
+
+const formatMoney = (value) =>
+  Number(value || 0).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+  });
 
 const normalizeSponsorProfile = (data) => {
   const source = data.profile || data.sponsor || {};
@@ -525,6 +539,292 @@ exports.confirmPublicAchPledge = async (req, res) => {
     });
   } finally {
     await session.endSession();
+  }
+};
+
+exports.createStripeCheckoutSession = async (req, res) => {
+  if (!stripe) {
+    return res.status(500).json({
+      message: "Stripe is not configured on the server yet.",
+    });
+  }
+
+  try {
+    const { profile: incomingProfile, location = {}, donation, childId, requestId } =
+      req.body || {};
+    const amount = Number(donation?.amount ?? req.body?.amount ?? 0);
+    const period = String(donation?.period || req.body?.period || "Monthly");
+    const profile = normalizeSponsorProfile({ profile: incomingProfile, location });
+    const email = String(profile.email || "").trim().toLowerCase();
+
+    if (!mongoose.isValidObjectId(childId)) {
+      return res.status(400).json({ message: "A valid child is required." });
+    }
+
+    if (!profile.fullName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !profile.phone) {
+      return res.status(400).json({ message: "Please provide valid sponsor details." });
+    }
+
+    if (!Number.isFinite(amount) || amount < 5 || amount > 100000) {
+      return res.status(400).json({ message: "Donation amount must be between $5 and $100,000." });
+    }
+
+    const validPeriods = ["Monthly", "3 Months", "6 Months", "Yearly"];
+    if (!validPeriods.includes(period)) {
+      return res.status(400).json({ message: "Donation period is invalid." });
+    }
+
+    const child = await Childern.findOne({
+      _id: childId,
+      sponsorshipStatus: "Available",
+    });
+
+    if (!child) {
+      return res.status(409).json({
+        message: "This child is no longer available for sponsorship.",
+      });
+    }
+
+    const referenceId = String(requestId || new mongoose.Types.ObjectId().toString());
+    const existingSponsorship = await Sponsorships.findOne({ publicRequestId: referenceId });
+    if (existingSponsorship) {
+      return res.status(200).json({
+        message: "This sponsorship request has already been submitted.",
+        sponsorshipId: existingSponsorship._id,
+        status: existingSponsorship.status,
+      });
+    }
+
+    const sponsor = await Sponsor.create({
+      profile: { ...profile, email },
+      sponsor: {
+        name: profile.fullName,
+        email,
+        phone: profile.phone,
+      },
+      location: {
+        address: String(location.address || "").trim(),
+        country: String(location.country || "").trim(),
+        city: String(location.city || "").trim(),
+        state: String(location.state || "").trim(),
+        region: String(location.region || "").trim(),
+        zipCode: String(location.zipCode || "").trim(),
+      },
+      child: child._id,
+      donation: {
+        amount,
+        period,
+        remindByEmail: donation?.remindByEmail !== false,
+      },
+      paymentMethod: "stripe",
+      profileStatus: getProfileStatus(profile),
+      source: "website",
+    });
+
+    const sponsorship = await Sponsorships.create({
+      child: child._id,
+      donor: sponsor._id,
+      publicRequestId: referenceId,
+      publicPledgeReference: `STRIPE-${new mongoose.Types.ObjectId().toString().toUpperCase()}`,
+      startDate: new Date(),
+      amount,
+      currency: "USD",
+      frequency: period,
+      status: "Pending",
+      payments: [],
+      totalPaid: 0,
+      notes: "Stripe Checkout session pending completion.",
+    });
+
+    const sessionData = buildStripeCheckoutSessionData({
+      childId: child._id,
+      childName: `${child.firstName || ""} ${child.secondName || ""}`.trim() || "child",
+      sponsor: {
+        name: profile.fullName,
+        email,
+        phone: profile.phone,
+      },
+      donation: {
+        amount,
+        period,
+      },
+      successUrl: `${process.env.WEBSITE_URL || "http://localhost:3000"}/stripe/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancelUrl: `${process.env.WEBSITE_URL || "http://localhost:3000"}/stripe/cancel`,
+    });
+
+    const checkoutSession = await stripe.checkout.sessions.create({
+      ...sessionData,
+      metadata: {
+        ...sessionData.metadata,
+        sponsorshipId: String(sponsorship._id),
+        sponsorId: String(sponsor._id),
+        childId: String(child._id),
+        publicRequestId: referenceId,
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      sessionId: checkoutSession.id,
+      url: checkoutSession.url,
+      sponsorshipId: sponsorship._id,
+      sponsorId: sponsor._id,
+      amount,
+      period,
+    });
+  } catch (error) {
+    console.error("Stripe session creation failed:", error);
+    return res.status(500).json({
+      message: error.message || "Unable to create Stripe checkout session.",
+    });
+  }
+};
+
+exports.handleStripeWebhook = async (req, res) => {
+  if (!stripe) {
+    return res.status(500).send("Stripe is not configured on the server yet.");
+  }
+
+  const signature = req.headers["stripe-signature"];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  if (!webhookSecret) {
+    return res.status(500).send("Missing STRIPE_WEBHOOK_SECRET.");
+  }
+
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      signature,
+      webhookSecret,
+    );
+  } catch (error) {
+    console.error("Stripe webhook signature verification failed:", error.message);
+    return res.status(400).send(`Webhook Error: ${error.message}`);
+  }
+
+  if (event.type !== "checkout.session.completed") {
+    return res.status(200).json({ received: true, event: event.type });
+  }
+
+  try {
+    const session = event.data.object;
+    const amount = Number((session.amount_total || 0) / 100);
+    const metadata = session.metadata || {};
+    const sponsorId = metadata.sponsorId;
+    const childId = metadata.childId;
+    const sponsorshipId = metadata.sponsorshipId;
+
+    let sponsorship = null;
+    if (mongoose.isValidObjectId(sponsorshipId)) {
+      sponsorship = await Sponsorships.findById(sponsorshipId);
+    }
+    if (!sponsorship && metadata.publicRequestId) {
+      sponsorship = await Sponsorships.findOne({ publicRequestId: metadata.publicRequestId });
+    }
+
+    if (!sponsorship) {
+      console.warn("Stripe webhook received for missing sponsorship:", metadata);
+      return res.status(200).json({ received: true, ignored: true });
+    }
+
+    const paymentExists = sponsorship.payments.some(
+      (payment) => payment.transactionId === session.id,
+    );
+
+    if (paymentExists) {
+      return res.status(200).json({ received: true, duplicated: true });
+    }
+
+    sponsorship.payments.push({
+      date: new Date(session.created ? session.created * 1000 : Date.now()),
+      amount,
+      currency: "USD",
+      method: "Stripe",
+      transactionId: session.id,
+      paymentGroupId: session.id,
+      notes: `Stripe Checkout session completed (${session.payment_status || "paid"}).`,
+      recordedAt: new Date(),
+      status: "Completed",
+    });
+
+    sponsorship.status = "Active";
+    sponsorship.totalPaid = Number(sponsorship.totalPaid || 0) + amount;
+    sponsorship.lastPayment = new Date(session.created ? session.created * 1000 : Date.now());
+    sponsorship.startDate = sponsorship.startDate || sponsorship.lastPayment;
+    sponsorship.bankReference = session.id;
+    await sponsorship.save();
+
+    if (childId && mongoose.isValidObjectId(childId)) {
+      const child = await Childern.findById(childId);
+      if (child) {
+        child.sponsor = sponsorId || sponsorship.donor;
+        child.sponsorshipStatus = "Sponsored";
+        await child.save();
+      }
+    }
+
+    const sponsor = sponsorId && mongoose.isValidObjectId(sponsorId)
+      ? await Sponsor.findById(sponsorId)
+      : null;
+
+    if (sponsor) {
+      sponsor.paymentMethod = "stripe";
+      sponsor.donation = {
+        ...((sponsor.donation && typeof sponsor.donation === "object") ? sponsor.donation : {}),
+        amount: sponsorship.amount,
+        period: sponsorship.frequency,
+      };
+      await sponsor.save();
+    }
+
+    const admin = await Admin.findOne({ isActive: true }).sort({ createdAt: 1 });
+    if (admin) {
+      await Notification.create({
+        userId: admin._id,
+        type: "system",
+        title: "Stripe sponsorship payment received",
+        description: `A Stripe payment of ${formatMoney(amount)} was received for sponsorship ${sponsorship.publicPledgeReference || sponsorship._id}.`,
+        linkTo: `/dashboard/sponsorships/${sponsorship._id}`,
+        relatedEntityType: "sponsorship",
+        relatedEntityId: String(sponsorship._id),
+        status: "unread",
+      });
+    }
+
+    const sponsorEmail =
+      sponsor?.profile?.email ||
+      sponsor?.sponsor?.email ||
+      session.customer_details?.email ||
+      metadata.sponsorEmail;
+
+    if (sponsorEmail) {
+      await sendEmail({
+        to: sponsorEmail,
+        subject: "Thank you for your sponsorship donation",
+        html: `
+          <div style="font-family: Arial, sans-serif; padding: 32px; color: #1f2937;">
+            <h2>Thank you for your sponsorship!</h2>
+            <p>Your Stripe payment of <strong>${formatMoney(amount)}</strong> has been received successfully.</p>
+            <p>This sponsorship is now active and your support will go directly to the child you selected.</p>
+            <p>With gratitude,<br />Seeds of Love Foundation</p>
+          </div>
+        `,
+        text: `Thank you for your sponsorship donation of ${formatMoney(amount)}. Your payment has been received successfully and the sponsorship is now active.`,
+      });
+    }
+
+    return res.status(200).json({
+      received: true,
+      sponsorshipId: sponsorship._id,
+      amount,
+      status: "completed",
+    });
+  } catch (error) {
+    console.error("Failed to handle Stripe webhook:", error);
+    return res.status(500).json({ message: "Unable to process Stripe webhook." });
   }
 };
 
