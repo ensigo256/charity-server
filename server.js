@@ -29,14 +29,14 @@ const corsOptions = {
   exposedHeaders: ["X-Page", "X-Page-Size", "X-Total-Count", "X-Page-Count"],
 };
 
-app.use(cors(corsOptions));
+app.use(cors());
 
 // Security middleware
-app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-  }),
-);
+// app.use(
+//   helmet({
+//     crossOriginResourcePolicy: { policy: "cross-origin" },
+//   }),
+// );
 
 // Rate limiting
 const limiter = rateLimit({
