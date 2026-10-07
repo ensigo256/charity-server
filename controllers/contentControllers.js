@@ -92,7 +92,9 @@ exports.getContent = async (req, res) => {
   try {
     await ensureDefaults();
     const query = {};
-    if (req.query.section) query.section = req.query.section;
+    if (typeof req.query.section === "string" && req.query.section) {
+      query.section = req.query.section;
+    }
     query.status = req.query.status === "draft" ? "draft" : "published";
     const items = await Content.find(query).sort({ updatedAt: -1 }).select("-__v");
     return res.status(200).json(items);

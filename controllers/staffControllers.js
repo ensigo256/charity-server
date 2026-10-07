@@ -2,6 +2,7 @@ const Staff = require("../models/staff");
 const DeleteImage = require("../utils/deleteCloudImg");
 const { validationResult } = require("express-validator");
 const { getPagination, setPaginationHeaders } = require("../utils/pagination");
+const { pickEditableStaffFields } = require("../utils/staffInput");
 // const notifUtil = require('../utils/notificationUtil');
 
  
@@ -10,7 +11,8 @@ exports.createStaff = async (req, res) => {
     try {
         
 
-        const { name, email, phone, role, gender, photo,position,type } = req.body;
+        const { name, email, phone, role, photo, type, status, socialLinks } =
+            pickEditableStaffFields(req.body);
 
         const newStaff = new Staff({
             name,
@@ -19,7 +21,9 @@ exports.createStaff = async (req, res) => {
             role,
             gender,
             photo: photo || { url: "", public_id: "" },
-           type
+            type,
+            status,
+            socialLinks,
         });
 
         await newStaff.save();
@@ -95,13 +99,13 @@ exports.updateStaff = async (req, res) => {
          
 
         const { id } = req.params;
-        const updateData = req.body;
+        const updateData = pickEditableStaffFields(req.body);
 
         const findStaff = await Staff.findById(id);
         if (!findStaff) {
             return res.status(404).json({ message: "Staff member not found" });
         }
-        if (updateData.photo.public_id && findStaff.photo.public_id && findStaff.photo.public_id !== updateData.photo.public_id) {
+        if (updateData.photo?.public_id && findStaff.photo?.public_id && findStaff.photo.public_id !== updateData.photo.public_id) {
             await DeleteImage(findStaff.photo.public_id);
         }
 

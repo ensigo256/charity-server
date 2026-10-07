@@ -3,6 +3,7 @@ const deleteImage = require("../utils/deleteCloudImg");
 const mongoose = require("mongoose");
 const { calculateGraduation, normalizeStage } = require("../utils/educationGraduation");
 const { getPagination, setPaginationHeaders } = require("../utils/pagination");
+const { pickEditableChildProfileFields } = require("../utils/childProfileInput");
 
 const PUBLIC_PROFILE_FIELDS = [
   "firstName",
@@ -114,20 +115,23 @@ const normalizeReportCards = (reportCards = []) => {
 //create child profile
 exports.createChildProfile = async (req, res) => {
   try {
-    const data = req.body;
+    const data = req.body || {};
     const stringNeeds = Array.isArray(data.needs)
       ? data.needs.join(", ")
       : data.needs || "";
     const education = prepareEducation(data.education, data.school);
 
     const payLoad = {
-      ...data,
+      ...pickEditableChildProfileFields(data),
       needs: stringNeeds,
       education,
-      reportCards: normalizeReportCards(data.reportCards),
     };
 
-    const newProfile = new Profiles({ ...payLoad, sponsor: null });
+    const newProfile = new Profiles({
+      ...payLoad,
+      sponsorshipStatus: "Available",
+      sponsor: null,
+    });
     await newProfile.save();
     res
       .status(201)
@@ -145,7 +149,7 @@ exports.createChildProfile = async (req, res) => {
 
 exports.updateChildProfile = async (req, res) => {
   try {
-    const data = req.body;
+    const data = req.body || {};
     const existingProfile = await Profiles.findById(req.params.id);
     if (!existingProfile) {
       return res.status(404).json({ message: "Child profile not found" });
@@ -158,13 +162,10 @@ exports.updateChildProfile = async (req, res) => {
       : existingProfile.education;
 
     const payLoad = {
-      ...data,
+      ...pickEditableChildProfileFields(data),
       needs: stringNeeds,
       education,
     };
-    if (Object.prototype.hasOwnProperty.call(data, "reportCards")) {
-      payLoad.reportCards = normalizeReportCards(data.reportCards);
-    }
 
     const updatedProfile = await Profiles.findByIdAndUpdate(
       req.params.id,

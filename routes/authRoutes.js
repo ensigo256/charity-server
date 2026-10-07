@@ -61,7 +61,7 @@ const credentialsValidation = [
 const registrationValidation = [
   ...credentialsValidation,
   body("password").custom((password, { req }) => {
-    const minimum = req.body.role === "developer" ? 12 : 6;
+    const minimum = 12;
     if (typeof password !== "string" || password.length < minimum || password.length > 128) {
       throw new Error(`Password must be between ${minimum} and 128 characters for this role`);
     }
@@ -75,7 +75,7 @@ const userIdValidation = [
 
 const passwordResetValidation = [
   ...userIdValidation,
-  body("password").isString().isLength({ min: 6, max: 128 }).withMessage("Password must be at least 6 and no more than 128 characters"),
+  body("password").isString().isLength({ min: 12, max: 128 }).withMessage("Password must be at least 12 and no more than 128 characters"),
 ];
 
 router.post(

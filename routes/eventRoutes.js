@@ -1,4 +1,5 @@
 const Express = require("express");
+const rateLimit = require("express-rate-limit");
 const router = Express.Router();
 const { body, param } = require("express-validator");
 const {
@@ -12,6 +13,14 @@ const {
 } = require("../controllers/eventControllers");
 const { requireAuth, requirePermission } = require("../middleware/auth");
 const { validateRequest } = require("../middleware/validate");
+const { isValidPublicInteractionId } = require("../utils/publicInteractionId");
+const publicInteractionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many interactions. Please try again later." },
+});
 
 const eventFields = [
   body("title")
@@ -95,13 +104,19 @@ router.put(
 
 router.post(
   "/:eventId/log-share",
-
+  publicInteractionLimiter,
+  param("eventId").isMongoId(),
+  body("uuid").custom(isValidPublicInteractionId).withMessage("A valid interaction ID is required."),
+  validateRequest,
   shareToggle,
 );
 
 router.post(
   "/:eventId/log-view",
-
+  publicInteractionLimiter,
+  param("eventId").isMongoId(),
+  body("uuid").custom(isValidPublicInteractionId).withMessage("A valid interaction ID is required."),
+  validateRequest,
   saveViews,
 );
 

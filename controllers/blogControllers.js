@@ -2,6 +2,7 @@ const Blogs = require("../models/blog");
 const DeleteImage = require("../utils/deleteCloudImg");
 const { validationResult } = require("express-validator");
 const { getPagination, setPaginationHeaders } = require("../utils/pagination");
+const { buildBlogUpdate } = require("../utils/blogInput");
 const notifUtil = require('../utils/notificationUtil');
 
  
@@ -138,14 +139,13 @@ exports.updateBlog = async (req, res) => {
         
 
         const { id } = req.params;
-        const updateData = req.body;
-
-        const newupdateData = { ...updateData,image: updateData.imageUrl ? { url: updateData.imageUrl, public_id: '' } : updateData.image || {url: '', public_id: ''} };
-const findPost = await Blogs.findById(id);
+        const updateData = req.body || {};
+        const newupdateData = buildBlogUpdate(updateData);
+        const findPost = await Blogs.findById(id);
         if (!findPost) {
             return res.status(404).json({ message: "Blog not found" });
         }
-        if (updateData.image.public_id && findPost.image.public_id && findPost.image.public_id !== updateData.image.public_id) {
+        if (newupdateData.image?.public_id && findPost.image?.public_id && findPost.image.public_id !== newupdateData.image.public_id) {
             await DeleteImage(findPost.image.public_id);
         }
         const blog = await Blogs.findByIdAndUpdate(id, newupdateData, {

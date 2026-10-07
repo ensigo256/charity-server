@@ -13,6 +13,7 @@
     "dev": "nodemon server.js",
     "prod": "NODE_ENV=production node server.js",
     "db:indexes": "node scripts/createIndexes.js",
+    "db:migrate:ach-settings": "node scripts/migrateAchSettings.js",
     "db:migrate:sponsor-reminders": "node scripts/enableSponsorEmailReminders.js"
   },
   "dependencies": {

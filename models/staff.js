@@ -11,7 +11,6 @@ const staffSchema = new mongoose.Schema(
         type: { type: String, enum: ["staff", "volunteer"] },
     socialLinks: [{ platform: String, url: String }],
     status: { type: String, enum: ["active", "inactive"], default: "active" },
-    type: { type: String },
         
         
     },

@@ -1,16 +1,16 @@
-const Admin = require("../models/admin");
 const AdminSession = require("../models/adminSession");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { randomUUID } = require("node:crypto");
 const { validationResult } = require("express-validator");
+const Admin = require('../models/admin')
 
 const REFRESH_COOKIE_NAME = "charity-admin-refresh";
 const ACCESS_TOKEN_EXPIRY = "15m";
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 const ONLINE_WINDOW_MS = 5 * 60 * 1000;
 
-const minimumPasswordLength = (role) => role === "developer" ? 12 : 6;
+const minimumPasswordLength = () => 12;
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 function safeAdmin(admin, extra = {}) {
@@ -73,9 +73,9 @@ function issueAccessToken(admin, sessionId) {
     );
 }
 
-function issueRefreshToken(admin, sessionId) {
+function issueRefreshToken(admin, sessionId, refreshTokenId) {
     return jwt.sign(
-        { id: admin._id, sessionId, tokenVersion: admin.tokenVersion || 0, type: "refresh" },
+        { id: admin._id, sessionId, refreshTokenId, tokenVersion: admin.tokenVersion || 0, type: "refresh" },
         process.env.JWT_SECRET,
         { expiresIn: process.env.JWT_REFRESH_EXPIRY || "7d" },
     );
@@ -91,8 +91,8 @@ exports.registerAdmin = async (req, res) => {
         const { password } = req.body;
         const username = String(req.body.username || "").trim();
         const role = req.body.role || "admin";
-        if (password.length < minimumPasswordLength(role)) {
-            return res.status(400).json({ message: `Password must be at least ${minimumPasswordLength(role)} characters for the ${role} role.` });
+        if (password.length < minimumPasswordLength()) {
+            return res.status(400).json({ message: `Password must be at least ${minimumPasswordLength()} characters.` });
         }
         const existingAdmin = await Admin.findOne({ username: new RegExp(`^${escapeRegExp(username)}$`, "i") });
         if (existingAdmin) {
@@ -134,17 +134,19 @@ exports.loginAdmin = async (req, res) => {
         }
 
         const sessionId = randomUUID();
+        const refreshTokenId = randomUUID();
         const loggedInAt = new Date();
         await AdminSession.create({
             admin: admin._id,
             sessionId,
+            refreshTokenId,
             loginAt: loggedInAt,
             lastActivityAt: loggedInAt,
             expiresAt: new Date(loggedInAt.getTime() + SESSION_DURATION_MS),
             ...getSessionMetadata(req),
         });
         const token = issueAccessToken(admin, sessionId);
-        const refreshToken = issueRefreshToken(admin, sessionId);
+        const refreshToken = issueRefreshToken(admin, sessionId, refreshTokenId);
         admin.loggedIn = true;
         admin.lastLogin = loggedInAt;
         await admin.save();
@@ -177,19 +179,38 @@ exports.refreshAdmin = async (req, res) => {
             return res.status(401).json({ message: "Invalid refresh session" });
         }
 
-        const [admin, session] = await Promise.all([
-            Admin.findById(payload.id).select("_id username role tokenVersion isActive"),
-            AdminSession.findOne({ sessionId: payload.sessionId, admin: payload.id, revokedAt: null, loggedOutAt: null, expiresAt: { $gt: new Date() } }),
-        ]);
-        if (!admin || admin.isActive === false || !session || (admin.tokenVersion || 0) !== (payload.tokenVersion || 0)) {
+        const admin = await Admin.findById(payload.id).select("_id username role tokenVersion isActive");
+        if (!admin || admin.isActive === false || (admin.tokenVersion || 0) !== (payload.tokenVersion || 0)) {
             return res.status(401).json({ message: "Refresh session expired" });
         }
 
-        const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
-        session.lastActivityAt = new Date();
-        session.expiresAt = expiresAt;
-        await session.save();
-        res.cookie(REFRESH_COOKIE_NAME, issueRefreshToken(admin, session.sessionId), refreshCookieOptions());
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() + SESSION_DURATION_MS);
+        const nextRefreshTokenId = randomUUID();
+        const sessionFilter = {
+            sessionId: payload.sessionId,
+            admin: payload.id,
+            revokedAt: null,
+            loggedOutAt: null,
+            expiresAt: { $gt: now },
+            refreshTokenId: payload.refreshTokenId || null,
+        };
+        const session = await AdminSession.findOneAndUpdate(
+            sessionFilter,
+            {
+                $set: {
+                    refreshTokenId: nextRefreshTokenId,
+                    lastActivityAt: now,
+                    expiresAt,
+                },
+            },
+            { new: true },
+        );
+        if (!session) {
+            return res.status(401).json({ message: "Refresh session expired or already rotated" });
+        }
+
+        res.cookie(REFRESH_COOKIE_NAME, issueRefreshToken(admin, session.sessionId, nextRefreshTokenId), refreshCookieOptions());
         return res.status(200).json({
             id: admin._id,
             username: admin.username,
@@ -294,9 +315,9 @@ exports.updateAdmin = async (req, res) => {
         }
         if (passwordChanged) {
             const password = String(req.body.password);
-            const minimum = minimumPasswordLength(nextRole);
+            const minimum = minimumPasswordLength();
             if (password.length < minimum || password.length > 128) {
-                return res.status(400).json({ message: `Password must be between ${minimum} and 128 characters for the ${nextRole} role.` });
+                return res.status(400).json({ message: `Password must be between ${minimum} and 128 characters.` });
             }
             admin.password = await bcrypt.hash(password, 10);
         }
@@ -320,9 +341,9 @@ exports.resetAdminPassword = async (req, res) => {
         const admin = await Admin.findById(req.params.id);
         if (!admin) return res.status(404).json({ message: "User not found" });
         const password = String(req.body.password || "");
-        const minimum = minimumPasswordLength(admin.role);
+        const minimum = minimumPasswordLength();
         if (password.length < minimum || password.length > 128) {
-            return res.status(400).json({ message: `Password must be between ${minimum} and 128 characters for the ${admin.role} role.` });
+            return res.status(400).json({ message: `Password must be between ${minimum} and 128 characters.` });
         }
         admin.password = await bcrypt.hash(password, 10);
         await admin.save();

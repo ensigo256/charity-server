@@ -9,6 +9,7 @@ const adminSessionSchema = new mongoose.Schema(
       index: true,
     },
     sessionId: { type: String, required: true, unique: true },
+    refreshTokenId: { type: String, default: null },
     loginAt: { type: Date, required: true, default: Date.now },
     lastActivityAt: { type: Date, required: true, default: Date.now },
     expiresAt: { type: Date, required: true },

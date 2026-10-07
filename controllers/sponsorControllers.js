@@ -2,13 +2,75 @@ const { child } = require("winston");
 const Childern = require("../models/childProfile");
 const Sponsor = require("../models/sponsor");
 const Sponsorships = require("../models/sponsorships");
+const AchSettings = require("../models/achSettings");
 const Admin = require("../models/admin");
 const Notification = require("../models/notification");
 const deleteImage = require("../utils/deleteCloudImg");
 const mongoose = require("mongoose");
 const { sendEmail } = require("../utils/mail");
+const { deliverAchInstructions } = require("../utils/achInstructionDelivery");
 const { buildStripeCheckoutSessionData } = require("../utils/stripeCheckout");
+const { getConfiguredPaymentLink } = require("./stripePaymentLinkSettingsController");
 const { getPagination, setPaginationHeaders } = require("../utils/pagination");
+const { getStripeSessionValidationError } = require("../utils/stripePaymentValidation");
+const { isValidCloudinaryImageReference } = require("../utils/cloudinaryImageReference");
+const { pickEditableDonationFields } = require("../utils/sponsorProfileInput");
+const { normalizeManualPaymentInput } = require("../utils/manualPaymentInput");
+
+function normalizeSplitPaymentAllocationInput(payload = {}) {
+  const totalAmount = Number(payload.amount);
+  const currency = String(payload.currency || "UGX").trim().toUpperCase();
+  const allocationMode = payload.allocationMode === "equal" ? "equal" : "custom";
+  const rawAllocations = Array.isArray(payload.allocations) ? payload.allocations : [];
+
+  if (!Number.isInteger(totalAmount) || totalAmount <= 0 || totalAmount > 1000000) {
+    throw new Error("Donation amount must be a positive whole number no greater than 1,000,000.");
+  }
+  if (!/^[A-Z]{3}$/.test(currency)) {
+    throw new Error("Currency must be a three-letter ISO code.");
+  }
+  if (rawAllocations.length === 0 || rawAllocations.length > 50) {
+    throw new Error("Select between 1 and 50 allocations.");
+  }
+
+  const allocations = rawAllocations.map((allocation) => {
+    const sponsorshipId = String(allocation?.sponsorshipId || "").trim();
+    const childId = String(allocation?.childId || "").trim();
+    const amount = Number(allocation?.amount);
+
+    if (!mongoose.isValidObjectId(sponsorshipId) || !mongoose.isValidObjectId(childId)) {
+      throw new Error("Allocations contain invalid or duplicate records.");
+    }
+    if (!Number.isInteger(amount) || amount <= 0 || amount > 1000000) {
+      throw new Error("Every allocation must be a positive whole number.");
+    }
+
+    return { sponsorshipId, childId, amount };
+  });
+
+  const uniqueSponsorshipIds = new Set(allocations.map((allocation) => allocation.sponsorshipId));
+  const uniqueChildIds = new Set(allocations.map((allocation) => allocation.childId));
+  if (uniqueSponsorshipIds.size !== allocations.length || uniqueChildIds.size !== allocations.length) {
+    throw new Error("Allocations contain invalid or duplicate records.");
+  }
+
+  let finalAllocations = allocations;
+  if (allocationMode === "equal") {
+    const baseAmount = Math.floor(totalAmount / allocations.length);
+    const remainder = totalAmount % allocations.length;
+    finalAllocations = allocations.map((allocation, index) => ({
+      ...allocation,
+      amount: baseAmount + (index < remainder ? 1 : 0),
+    }));
+  }
+
+  const allocatedTotal = finalAllocations.reduce((sum, allocation) => sum + allocation.amount, 0);
+  if (allocatedTotal !== totalAmount) {
+    throw new Error("Allocated amounts must equal the donation total.");
+  }
+
+  return { totalAmount, currency, allocationMode, allocations: finalAllocations };
+}
 const {
   generateSponsorDueReminders,
   calculateNextPaymentDate,
@@ -57,21 +119,6 @@ const getProfileCompletion = (profile) =>
       PROFILE_COMPLETION_FIELDS.length) *
       100,
   );
-
-const getAchInstructions = () => {
-  const instructions = {
-    beneficiaryName: String(process.env.ACH_BENEFICIARY_NAME || "").trim(),
-    bankName: String(process.env.ACH_BANK_NAME || "").trim(),
-    routingNumber: String(process.env.ACH_ROUTING_NUMBER || "").trim(),
-    accountNumber: String(process.env.ACH_ACCOUNT_NUMBER || "").trim(),
-    accountType: String(process.env.ACH_ACCOUNT_TYPE || "").trim(),
-    referenceInstructions: String(
-      process.env.ACH_REFERENCE_INSTRUCTIONS || "",
-    ).trim(),
-  };
-
-  return Object.values(instructions).every(Boolean) ? instructions : null;
-};
 
 const formatMoney = (value) =>
   Number(value || 0).toLocaleString("en-US", {
@@ -257,13 +304,6 @@ exports.createPublicPledge = async (req, res) => {
     const { profile: incomingProfile, location = {}, donation, childId, requestId } =
       req.body || {};
     const paymentMethod = String(req.body?.paymentMethod || "").toLowerCase();
-    const instructions = getAchInstructions();
-
-    if (!instructions) {
-      return res.status(503).json({
-        message: "Manual bank transfer instructions are not configured yet.",
-      });
-    }
     if (paymentMethod !== "ach") {
       return res.status(400).json({
         message: "Only manual ACH transfers are currently available online.",
@@ -290,7 +330,16 @@ exports.createPublicPledge = async (req, res) => {
           period: existingPledge.frequency,
           status: existingPledge.status,
         },
-        achInstructions: instructions,
+        emailDelivery: {
+          status: existingPledge.achInstructionEmail?.status || "unknown",
+          attempts: existingPledge.achInstructionEmail?.attempts || 0,
+        },
+      });
+    }
+
+    if (!(await AchSettings.exists({ _id: "organization-ach" }))) {
+      return res.status(503).json({
+        message: "Manual bank transfer instructions are not configured yet.",
       });
     }
 
@@ -329,11 +378,7 @@ exports.createPublicPledge = async (req, res) => {
     }
 
     const profileImage = req.body?.image;
-    if (
-      profileImage &&
-      (!/^https:\/\//i.test(String(profileImage.url || "")) ||
-        !String(profileImage.public_id || "").trim())
-    ) {
+    if (profileImage && !isValidCloudinaryImageReference(profileImage)) {
       return res.status(400).json({ message: "Sponsor image is invalid." });
     }
 
@@ -405,6 +450,7 @@ exports.createPublicPledge = async (req, res) => {
             frequency: period,
             status: "Pending",
             payments: [],
+            achInstructionEmail: { status: "pending", attempts: 0 },
             totalPaid: 0,
             notes: "Public manual ACH pledge; awaiting bank transfer.",
           },
@@ -413,8 +459,12 @@ exports.createPublicPledge = async (req, res) => {
       );
     });
 
+    const emailDelivery = await deliverAchInstructions(sponsorship._id);
+
     return res.status(201).json({
-      message: "Pledge submitted. It will remain pending until the transfer is verified.",
+      message: emailDelivery.status === "sent"
+        ? "Pledge submitted. Transfer instructions were emailed and the pledge remains pending until funds are verified."
+        : "Pledge submitted, but transfer instructions could not be emailed. An administrator can retry delivery.",
       pledge: {
         id: sponsorship._id,
         reference: pledgeReference,
@@ -423,7 +473,7 @@ exports.createPublicPledge = async (req, res) => {
         period,
         status: sponsorship.status,
       },
-      achInstructions: instructions,
+      emailDelivery,
     });
   } catch (error) {
     if (error?.code === 11000) {
@@ -441,7 +491,10 @@ exports.createPublicPledge = async (req, res) => {
             period: existingPledge.frequency,
             status: existingPledge.status,
           },
-          achInstructions: getAchInstructions(),
+          emailDelivery: {
+            status: existingPledge.achInstructionEmail?.status || "unknown",
+            attempts: existingPledge.achInstructionEmail?.attempts || 0,
+          },
         });
       }
       return res.status(409).json({ message: "This pledge was already recorded." });
@@ -449,6 +502,329 @@ exports.createPublicPledge = async (req, res) => {
     console.error("Unable to create public pledge:", error.message);
     return res.status(error.statusCode || 500).json({
       message: error.statusCode ? error.message : "Unable to submit pledge.",
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+
+exports.createPublicStripePaymentLinkPledge = async (req, res) => {
+  const paymentLink = await getConfiguredPaymentLink();
+  if (!paymentLink.configured) {
+    return res.status(503).json({ message: "Stripe donations are not configured yet." });
+  }
+  const paymentLinkUrl = paymentLink.paymentLinkUrl;
+  const paymentUrlForReference = (reference) => {
+    const url = new URL(paymentLinkUrl);
+    url.searchParams.set("client_reference_id", reference);
+    return url.toString();
+  };
+
+  const session = await mongoose.startSession();
+  try {
+    const { profile: incomingProfile, location = {}, donation, childId, requestId } =
+      req.body || {};
+    if (!mongoose.isValidObjectId(childId)) {
+      return res.status(400).json({ message: "A valid child is required." });
+    }
+    if (!/^[a-zA-Z0-9-]{16,100}$/.test(String(requestId || ""))) {
+      return res.status(400).json({ message: "A valid request identifier is required." });
+    }
+
+    const existingPledge = await Sponsorships.findOne({ publicRequestId: String(requestId) });
+    if (existingPledge) {
+      return res.status(200).json({
+        message: "This pledge has already been submitted.",
+        paymentUrl: paymentUrlForReference(existingPledge.publicPledgeReference),
+        pledge: {
+          id: existingPledge._id,
+          reference: existingPledge.publicPledgeReference,
+          amount: existingPledge.amount,
+          currency: existingPledge.currency || "USD",
+          period: existingPledge.frequency,
+          status: existingPledge.status,
+        },
+      });
+    }
+
+    const profile = normalizeSponsorProfile({ profile: incomingProfile, location });
+    const email = String(profile.email || "").trim().toLowerCase();
+    const amount = Number(donation?.amount);
+    const period = String(donation?.period || "");
+    const allowedPeriods = ["Monthly", "3 Months", "6 Months", "Yearly"];
+    if (
+      !profile.fullName ||
+      profile.fullName.length < 2 ||
+      !/^\S+@\S+\.\S+$/.test(email) ||
+      !profile.phone ||
+      !Number.isFinite(amount) ||
+      amount < 5 ||
+      amount > 100000 ||
+      !allowedPeriods.includes(period)
+    ) {
+      return res.status(400).json({ message: "Please provide valid sponsor and pledge details." });
+    }
+
+    const profileImage = req.body?.image;
+    if (profileImage && !isValidCloudinaryImageReference(profileImage)) {
+      return res.status(400).json({ message: "Sponsor image is invalid." });
+    }
+
+    const pledgeReference = `STRIPE-${new mongoose.Types.ObjectId().toString().toUpperCase()}`;
+    let sponsor;
+    let sponsorship;
+    await session.withTransaction(async () => {
+      const availableChild = await Childern.findOne({
+        _id: childId,
+        sponsorshipStatus: "Available",
+      }).session(session);
+      if (!availableChild) {
+        const error = new Error("This child is no longer available for sponsorship.");
+        error.statusCode = 409;
+        throw error;
+      }
+
+      [sponsor] = await Sponsor.create(
+        [{
+          profile: { ...profile, email },
+          sponsor: { name: profile.fullName, email, phone: profile.phone },
+          image: profileImage
+            ? { url: String(profileImage.url), public_id: String(profileImage.public_id) }
+            : undefined,
+          location: {
+            address: String(location.address || "").trim(),
+            country: String(location.country || "").trim(),
+            city: String(location.city || "").trim(),
+            state: String(location.state || "").trim(),
+            region: String(location.region || "").trim(),
+            zipCode: String(location.zipCode || "").trim(),
+          },
+          child: availableChild._id,
+          donation: { amount, period, remindByEmail: donation.remindByEmail !== false },
+          paymentMethod: "stripe",
+          profileStatus: getProfileStatus(profile),
+          source: "website",
+        }],
+        { session },
+      );
+
+      [sponsorship] = await Sponsorships.create(
+        [{
+          child: availableChild._id,
+          donor: sponsor._id,
+          publicPledgeReference: pledgeReference,
+          publicRequestId: String(requestId),
+          startDate: new Date(),
+          amount,
+          currency: "USD",
+          frequency: period,
+          status: "Pending",
+          payments: [],
+          totalPaid: 0,
+          notes: "Stripe Payment Link pledge; awaiting staff verification.",
+        }],
+        { session },
+      );
+    });
+
+    return res.status(201).json({
+      message: "Pledge saved. Payment must be verified by staff before sponsorship activation.",
+      paymentUrl: paymentUrlForReference(pledgeReference),
+      pledge: {
+        id: sponsorship._id,
+        reference: pledgeReference,
+        amount,
+        currency: "USD",
+        period,
+        status: sponsorship.status,
+      },
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      const existingPledge = await Sponsorships.findOne({
+        publicRequestId: String(req.body?.requestId || ""),
+      });
+      if (existingPledge) {
+        return res.status(200).json({
+          message: "This pledge has already been submitted.",
+          paymentUrl: paymentUrlForReference(existingPledge.publicPledgeReference),
+          pledge: {
+            id: existingPledge._id,
+            reference: existingPledge.publicPledgeReference,
+            amount: existingPledge.amount,
+            currency: existingPledge.currency || "USD",
+            period: existingPledge.frequency,
+            status: existingPledge.status,
+          },
+        });
+      }
+      return res.status(409).json({ message: "This pledge was already recorded." });
+    }
+    return res.status(error.statusCode || 500).json({
+      message: error.statusCode ? error.message : "Unable to submit Stripe pledge.",
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+
+exports.retryPublicAchInstructionEmail = async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    return res.status(400).json({ message: "Invalid pledge id." });
+  }
+
+  try {
+    const delivery = await deliverAchInstructions(req.params.id);
+    if (delivery.status === "unavailable") {
+      return res.status(404).json({ message: "Pending public pledge not found." });
+    }
+    return res.status(200).json({ message: "Instruction email delivery checked.", emailDelivery: delivery });
+  } catch {
+    return res.status(500).json({ message: "Unable to retry instruction email delivery." });
+  }
+};
+
+exports.getPendingPublicAchPledges = async (req, res) => {
+  try {
+    const pagination = getPagination(req);
+    const achSponsors = await Sponsor.find({ paymentMethod: "ach" }).distinct("_id");
+    const filter = {
+      status: "Pending",
+      publicPledgeReference: { $exists: true, $ne: "" },
+      donor: { $in: achSponsors },
+    };
+    const [pledges, total] = await Promise.all([
+      Sponsorships.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(pagination.skip)
+        .limit(pagination.limit)
+        .populate([{ path: "child" }, { path: "donor" }]),
+      Sponsorships.countDocuments(filter),
+    ]);
+    setPaginationHeaders(res, { ...pagination, total });
+    return res.status(200).json(pledges);
+  } catch {
+    return res.status(500).json({ message: "Unable to load pending ACH pledges." });
+  }
+};
+
+exports.getPendingPublicStripePledges = async (req, res) => {
+  try {
+    const pagination = getPagination(req);
+    const stripeSponsors = await Sponsor.find({ paymentMethod: "stripe" }).distinct("_id");
+    const filter = {
+      status: "Pending",
+      publicPledgeReference: { $exists: true, $ne: "" },
+      donor: { $in: stripeSponsors },
+    };
+    const [pledges, total] = await Promise.all([
+      Sponsorships.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(pagination.skip)
+        .limit(pagination.limit)
+        .populate([{ path: "child" }, { path: "donor" }]),
+      Sponsorships.countDocuments(filter),
+    ]);
+    setPaginationHeaders(res, { ...pagination, total });
+    return res.status(200).json(pledges);
+  } catch {
+    return res.status(500).json({ message: "Unable to load pending Stripe pledges." });
+  }
+};
+
+exports.confirmPublicStripePledge = async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    const { amount, date, stripeReference, notes = "" } = req.body || {};
+    const normalizedReference = String(stripeReference || "").trim();
+    const receivedAmount = Number(amount);
+    const receivedDate = date ? new Date(date) : new Date();
+    if (
+      !/^pi_[A-Za-z0-9]+$/.test(normalizedReference) ||
+      !Number.isFinite(receivedAmount) ||
+      receivedAmount <= 0 ||
+      Number.isNaN(receivedDate.getTime())
+    ) {
+      return res.status(400).json({
+        message: "A valid Stripe PaymentIntent ID, received amount, and payment date are required.",
+      });
+    }
+
+    let updatedSponsorship;
+    let isFullyFunded = false;
+    await session.withTransaction(async () => {
+      const sponsorship = await Sponsorships.findById(req.params.id).session(session);
+      if (!sponsorship || !sponsorship.publicPledgeReference) {
+        const error = new Error("Pending public Stripe pledge not found.");
+        error.statusCode = 404;
+        throw error;
+      }
+      if (sponsorship.status !== "Pending") {
+        const error = new Error("This pledge is no longer pending.");
+        error.statusCode = 409;
+        throw error;
+      }
+      const donor = await Sponsor.findById(sponsorship.donor).session(session);
+      if (!donor || donor.paymentMethod !== "stripe") {
+        const error = new Error("This pledge is not a Stripe Payment Link pledge.");
+        error.statusCode = 409;
+        throw error;
+      }
+      const duplicatePayment = await Sponsorships.exists({
+        "payments.transactionId": normalizedReference,
+      }).session(session);
+      if (duplicatePayment) {
+        const error = new Error("That Stripe payment reference has already been recorded.");
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const child = await Childern.findById(sponsorship.child).session(session);
+      if (!child || (child.sponsorshipStatus !== "Available" && child.sponsor?.toString() !== donor._id.toString())) {
+        const error = new Error("The child is no longer available; resolve the pledge conflict before confirming.");
+        error.statusCode = 409;
+        throw error;
+      }
+
+      sponsorship.payments.push({
+        date: receivedDate,
+        amount: receivedAmount,
+        currency: "USD",
+        method: "Stripe",
+        transactionId: normalizedReference,
+        notes: String(notes).trim(),
+        recordedAt: new Date(),
+        recordedBy: req.admin?.id,
+        status: "Completed",
+      });
+      sponsorship.totalPaid = Number(sponsorship.totalPaid || 0) + receivedAmount;
+      sponsorship.lastPayment = receivedDate;
+      sponsorship.bankReference = normalizedReference;
+      isFullyFunded = sponsorship.totalPaid >= Number(sponsorship.amount || 0);
+      if (isFullyFunded) {
+        sponsorship.status = "Active";
+        sponsorship.startDate = sponsorship.startDate || receivedDate;
+        child.sponsor = donor._id;
+        child.sponsorshipStatus = "Sponsored";
+        await child.save({ session });
+      }
+      await sponsorship.save({ session });
+      updatedSponsorship = sponsorship;
+    });
+
+    return res.status(200).json({
+      message: isFullyFunded
+        ? "Stripe payment recorded and sponsorship activated."
+        : "Stripe payment recorded. The pledge remains pending until fully funded.",
+      sponsorship: updatedSponsorship,
+      fullyFunded: isFullyFunded,
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      return res.status(409).json({ message: "That Stripe payment reference has already been recorded." });
+    }
+    return res.status(error.statusCode || 500).json({
+      message: error.statusCode ? error.message : "Unable to confirm Stripe payment.",
     });
   } finally {
     await session.endSession();
@@ -487,6 +863,13 @@ exports.confirmPublicAchPledge = async (req, res) => {
       }
       if (sponsorship.status !== "Pending") {
         const error = new Error("This pledge is no longer pending.");
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const donor = await Sponsor.findById(sponsorship.donor).session(session);
+      if (!donor || donor.paymentMethod !== "ach") {
+        const error = new Error("This pledge is not a manual ACH pledge.");
         error.statusCode = 409;
         throw error;
       }
@@ -709,76 +1092,108 @@ exports.handleStripeWebhook = async (req, res) => {
     return res.status(200).json({ received: true, event: event.type });
   }
 
+  const transaction = await mongoose.startSession();
   try {
-    const session = event.data.object;
-    const amount = Number((session.amount_total || 0) / 100);
-    const metadata = session.metadata || {};
+    const checkoutSession = event.data.object;
+    const amount = Number((checkoutSession.amount_total || 0) / 100);
+    const metadata = checkoutSession.metadata || {};
     const sponsorId = metadata.sponsorId;
     const childId = metadata.childId;
     const sponsorshipId = metadata.sponsorshipId;
 
-    let sponsorship = null;
-    if (mongoose.isValidObjectId(sponsorshipId)) {
-      sponsorship = await Sponsorships.findById(sponsorshipId);
-    }
-    if (!sponsorship && metadata.publicRequestId) {
-      sponsorship = await Sponsorships.findOne({ publicRequestId: metadata.publicRequestId });
-    }
+    let processingResult = { ignored: true };
+    await transaction.withTransaction(async () => {
+      let sponsorship = null;
+      if (mongoose.isValidObjectId(sponsorshipId)) {
+        sponsorship = await Sponsorships.findById(sponsorshipId).session(transaction);
+      }
+      if (!sponsorship && metadata.publicRequestId) {
+        sponsorship = await Sponsorships.findOne({
+          publicRequestId: metadata.publicRequestId,
+        }).session(transaction);
+      }
 
-    if (!sponsorship) {
-      console.warn("Stripe webhook received for missing sponsorship:", metadata);
+      if (!sponsorship) {
+        console.warn("Stripe webhook received for missing sponsorship:", metadata);
+        processingResult = { ignored: true };
+        return;
+      }
+
+      const validationError = getStripeSessionValidationError(
+        checkoutSession,
+        sponsorship,
+      );
+      if (validationError) {
+        console.warn("Stripe webhook session rejected:", {
+          sessionId: checkoutSession.id,
+          sponsorshipId: sponsorship._id,
+          reason: validationError,
+        });
+        processingResult = { ignored: true };
+        return;
+      }
+
+      const paymentExists = sponsorship.payments.some(
+        (payment) => payment.transactionId === checkoutSession.id,
+      );
+      if (paymentExists) {
+        processingResult = { duplicated: true };
+        return;
+      }
+
+      const paymentDate = new Date(
+        checkoutSession.created ? checkoutSession.created * 1000 : Date.now(),
+      );
+      sponsorship.payments.push({
+        date: paymentDate,
+        amount,
+        currency: checkoutSession.currency.toUpperCase(),
+        method: "Stripe",
+        transactionId: checkoutSession.id,
+        paymentGroupId: checkoutSession.id,
+        notes: `Stripe Checkout session completed (${checkoutSession.payment_status}).`,
+        recordedAt: new Date(),
+        status: "Completed",
+      });
+
+      sponsorship.status = "Active";
+      sponsorship.totalPaid = Number(sponsorship.totalPaid || 0) + amount;
+      sponsorship.lastPayment = paymentDate;
+      sponsorship.startDate = sponsorship.startDate || paymentDate;
+      sponsorship.bankReference = checkoutSession.id;
+      await sponsorship.save({ session: transaction });
+
+      const child = await Childern.findById(sponsorship.child).session(transaction);
+      if (child) {
+        child.sponsor = sponsorship.donor;
+        child.sponsorshipStatus = "Sponsored";
+        await child.save({ session: transaction });
+      }
+
+      const sponsor = await Sponsor.findById(sponsorship.donor).session(transaction);
+      if (sponsor) {
+        sponsor.paymentMethod = "stripe";
+        sponsor.donation = {
+          ...((sponsor.donation && typeof sponsor.donation === "object")
+            ? sponsor.donation
+            : {}),
+          amount: sponsorship.amount,
+          period: sponsorship.frequency,
+        };
+        await sponsor.save({ session: transaction });
+      }
+
+      processingResult = { sponsorship, sponsor };
+    });
+
+    if (processingResult.ignored) {
       return res.status(200).json({ received: true, ignored: true });
     }
-
-    const paymentExists = sponsorship.payments.some(
-      (payment) => payment.transactionId === session.id,
-    );
-
-    if (paymentExists) {
+    if (processingResult.duplicated) {
       return res.status(200).json({ received: true, duplicated: true });
     }
 
-    sponsorship.payments.push({
-      date: new Date(session.created ? session.created * 1000 : Date.now()),
-      amount,
-      currency: "USD",
-      method: "Stripe",
-      transactionId: session.id,
-      paymentGroupId: session.id,
-      notes: `Stripe Checkout session completed (${session.payment_status || "paid"}).`,
-      recordedAt: new Date(),
-      status: "Completed",
-    });
-
-    sponsorship.status = "Active";
-    sponsorship.totalPaid = Number(sponsorship.totalPaid || 0) + amount;
-    sponsorship.lastPayment = new Date(session.created ? session.created * 1000 : Date.now());
-    sponsorship.startDate = sponsorship.startDate || sponsorship.lastPayment;
-    sponsorship.bankReference = session.id;
-    await sponsorship.save();
-
-    if (childId && mongoose.isValidObjectId(childId)) {
-      const child = await Childern.findById(childId);
-      if (child) {
-        child.sponsor = sponsorId || sponsorship.donor;
-        child.sponsorshipStatus = "Sponsored";
-        await child.save();
-      }
-    }
-
-    const sponsor = sponsorId && mongoose.isValidObjectId(sponsorId)
-      ? await Sponsor.findById(sponsorId)
-      : null;
-
-    if (sponsor) {
-      sponsor.paymentMethod = "stripe";
-      sponsor.donation = {
-        ...((sponsor.donation && typeof sponsor.donation === "object") ? sponsor.donation : {}),
-        amount: sponsorship.amount,
-        period: sponsorship.frequency,
-      };
-      await sponsor.save();
-    }
+    const { sponsorship, sponsor } = processingResult;
 
     const admin = await Admin.findOne({ isActive: true }).sort({ createdAt: 1 });
     if (admin) {
@@ -797,7 +1212,7 @@ exports.handleStripeWebhook = async (req, res) => {
     const sponsorEmail =
       sponsor?.profile?.email ||
       sponsor?.sponsor?.email ||
-      session.customer_details?.email ||
+      checkoutSession.customer_details?.email ||
       metadata.sponsorEmail;
 
     if (sponsorEmail) {
@@ -825,6 +1240,8 @@ exports.handleStripeWebhook = async (req, res) => {
   } catch (error) {
     console.error("Failed to handle Stripe webhook:", error);
     return res.status(500).json({ message: "Unable to process Stripe webhook." });
+  } finally {
+    await transaction.endSession();
   }
 };
 
@@ -1079,7 +1496,7 @@ exports.updateSponsorProfile = async (req, res) => {
     const incoming = req.body.profile || req.body;
     const profile = {};
     const image = req.body.image;
-    const donationUpdate = req.body.donation || {};
+    const donationUpdate = pickEditableDonationFields(req.body.donation || {});
 
     allowedFields.forEach((field) => {
       if (incoming[field] !== undefined)
@@ -1166,7 +1583,11 @@ exports.updateSponsorProfile = async (req, res) => {
 
 exports.createPaymentRecord = async (req, res) => {
   try {
-    const data = req.body;
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ message: "Invalid sponsorship id." });
+    }
+
+    const paymentInput = normalizeManualPaymentInput(req.body);
     const sponsorship = await Sponsorships.findById(req.params.id);
     if (!sponsorship) {
       return res.status(404).json({ message: "Sponsorship record not found" });
@@ -1176,20 +1597,51 @@ exports.createPaymentRecord = async (req, res) => {
         message: "Record public ACH receipts through the pledge confirmation workflow.",
       });
     }
+    const duplicateReference = await Sponsorships.exists({
+      "payments.transactionId": paymentInput.transactionId,
+    });
+    if (duplicateReference) {
+      return res.status(409).json({ message: "That payment reference has already been recorded." });
+    }
+
+    const paymentDate = new Date();
     const newPayment = {
-      date: new Date(),
-      amount: data.amount,
-      method: data.method,
-      transactionId: data.transactionId,
-      notes: data.notes || "",
-      status: data.amount > 0 ? "Completed" : "Pending",
+      date: paymentDate,
+      amount: paymentInput.amount,
+      method: paymentInput.method,
+      transactionId: paymentInput.transactionId,
+      notes: paymentInput.notes,
+      status: "Completed",
     };
-    sponsorship.payments.push(newPayment);
-    sponsorship.status = "Active";
-    sponsorship.totalPaid =
-      (sponsorship.totalPaid || 0) + Number(data.amount || 0);
-    sponsorship.lastPayment = new Date();
-    await sponsorship.save();
+    const updatedSponsorship = await Sponsorships.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        $or: [
+          { publicPledgeReference: { $exists: false } },
+          { publicPledgeReference: null },
+          { publicPledgeReference: "" },
+        ],
+        "payments.transactionId": { $ne: paymentInput.transactionId },
+      },
+      {
+        $push: { payments: newPayment },
+        $inc: { totalPaid: paymentInput.amount },
+        $set: { status: "Active", lastPayment: paymentDate },
+      },
+      { new: true, runValidators: true },
+    );
+    if (!updatedSponsorship) {
+      const latestSponsorship = await Sponsorships.findById(req.params.id);
+      if (!latestSponsorship) {
+        return res.status(404).json({ message: "Sponsorship record not found" });
+      }
+      if (latestSponsorship.publicPledgeReference) {
+        return res.status(409).json({
+          message: "Record public ACH receipts through the pledge confirmation workflow.",
+        });
+      }
+      return res.status(409).json({ message: "That payment reference has already been recorded." });
+    }
     res.status(201).json({
       message: "Payment record created successfully",
       payment: newPayment,
@@ -1222,23 +1674,17 @@ exports.recordSplitPayment = async (req, res) => {
       return res.status(400).json({ message: "Invalid sponsor id" });
     }
 
-    const totalAmount = Number(amount);
-    if (!Number.isInteger(totalAmount) || totalAmount <= 0) {
-      return res
-        .status(400)
-        .json({ message: "Donation amount must be a positive whole number." });
-    }
+    const normalizedSplit = normalizeSplitPaymentAllocationInput({
+      amount,
+      currency,
+      allocationMode,
+      allocations,
+    });
 
     if (!MANUAL_PAYMENT_METHODS.includes(method)) {
       return res
         .status(400)
         .json({ message: "A valid manual payment method is required." });
-    }
-
-    if (!Array.isArray(allocations) || allocations.length === 0) {
-      return res
-        .status(400)
-        .json({ message: "Select at least one child sponsorship." });
     }
 
     const sponsor = await Sponsor.findById(sponsorId);
@@ -1249,27 +1695,17 @@ exports.recordSplitPayment = async (req, res) => {
         .json({ message: "Archived sponsors cannot receive payments." });
     }
 
-    const sponsorshipIds = allocations.map(
+    const sponsorshipIds = normalizedSplit.allocations.map(
       (allocation) => allocation.sponsorshipId,
     );
-    const childIds = allocations.map((allocation) => allocation.childId);
-    if (
-      sponsorshipIds.some((id) => !mongoose.isValidObjectId(id)) ||
-      childIds.some((id) => !mongoose.isValidObjectId(id)) ||
-      new Set(sponsorshipIds).size !== sponsorshipIds.length ||
-      new Set(childIds).size !== childIds.length
-    ) {
-      return res
-        .status(400)
-        .json({ message: "Allocations contain invalid or duplicate records." });
-    }
+    const childIds = normalizedSplit.allocations.map((allocation) => allocation.childId);
 
     const sponsorships = await Sponsorships.find({
       _id: { $in: sponsorshipIds },
       donor: sponsorId,
     });
 
-    if (sponsorships.length !== allocations.length) {
+    if (sponsorships.length !== normalizedSplit.allocations.length) {
       return res.status(400).json({
         message: "One or more sponsorships do not belong to this sponsor.",
       });
@@ -1278,14 +1714,12 @@ exports.recordSplitPayment = async (req, res) => {
     const sponsorshipById = new Map(
       sponsorships.map((item) => [String(item._id), item]),
     );
-    const normalizedAllocations = allocations.map((allocation) => {
-      const sponsorship = sponsorshipById.get(String(allocation.sponsorshipId));
-      const allocationAmount = Number(allocation.amount);
+    const normalizedAllocations = normalizedSplit.allocations.map((allocation) => {
+      const sponsorship = sponsorshipById.get(allocation.sponsorshipId);
 
       if (
         !sponsorship ||
-        String(sponsorship.child?._id || sponsorship.child) !==
-          String(allocation.childId)
+        String(sponsorship.child?._id || sponsorship.child) !== String(allocation.childId)
       ) {
         throw new Error("Each child must match its sponsorship record.");
       }
@@ -1294,42 +1728,9 @@ exports.recordSplitPayment = async (req, res) => {
           "Payments can only be recorded for active sponsorships.",
         );
       }
-      if (
-        allocationMode !== "equal" &&
-        (!Number.isInteger(allocationAmount) || allocationAmount <= 0)
-      ) {
-        throw new Error("Every allocation must be a positive whole number.");
-      }
 
-      return { sponsorship, amount: allocationAmount };
+      return { sponsorship, amount: allocation.amount };
     });
-
-    let finalAllocations = normalizedAllocations;
-    if (allocationMode === "equal") {
-      const baseAmount = Math.floor(totalAmount / normalizedAllocations.length);
-      const remainder = totalAmount % normalizedAllocations.length;
-      finalAllocations = normalizedAllocations.map((allocation, index) => ({
-        ...allocation,
-        amount: baseAmount + (index < remainder ? 1 : 0),
-      }));
-    }
-
-    if (finalAllocations.some((allocation) => allocation.amount <= 0)) {
-      return res.status(400).json({
-        message:
-          "The donation must be large enough to give each selected child an amount.",
-      });
-    }
-
-    const allocatedTotal = finalAllocations.reduce(
-      (sum, allocation) => sum + allocation.amount,
-      0,
-    );
-    if (allocatedTotal !== totalAmount) {
-      return res
-        .status(400)
-        .json({ message: "Allocated amounts must equal the donation total." });
-    }
 
     const normalizedTransactionId = String(
       transactionId || `MANUAL-${Date.now()}`,

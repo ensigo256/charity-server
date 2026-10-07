@@ -2,11 +2,17 @@ const Express = require("express");
 const router = Express.Router();
 const rateLimit = require("express-rate-limit");
 const { body, param } = require("express-validator");
+const { validateRequest } = require("../middleware/validate");
 const {
   createSponsor,
   createPublicPledge,
+  createPublicStripePaymentLinkPledge,
+  retryPublicAchInstructionEmail,
+  getPendingPublicAchPledges,
+  getPendingPublicStripePledges,
   createStripeCheckoutSession,
   confirmPublicAchPledge,
+  confirmPublicStripePledge,
   cancelPublicPledge,
   getSponsorRecords,
   getSponsorById,
@@ -22,7 +28,13 @@ const {
   recordSplitPayment,
   checkSponsorReminderNotifications,
 } = require("../controllers/sponsorControllers");
-const { requireAuth, requirePermission } = require("../middleware/auth");
+const { requireAuth, requirePermission, requireRole } = require("../middleware/auth");
+const { getAchSettings, updateAchSettings } = require("../controllers/achSettingsController");
+const {
+  getAdminStripePaymentLink,
+  getPublicStripePaymentLink,
+  updateStripePaymentLink,
+} = require("../controllers/stripePaymentLinkSettingsController");
 const publicPledgeLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 8,
@@ -30,9 +42,63 @@ const publicPledgeLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: "Too many pledge attempts. Please try again later." },
 });
+const stripeCheckoutSessionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many checkout attempts. Please try again later." },
+});
+const splitPaymentFields = [
+  body("amount").isInt({ min: 1, max: 1000000 }),
+  body("currency").optional().matches(/^[A-Z]{3}$/),
+  body("date").optional().isISO8601(),
+  body("method").isIn(["Cash", "Bank Transfer", "Mobile Money", "ACH", "PayPal", "Zelle", "Stripe", "Check", "Other"]),
+  body("transactionId").trim().isLength({ min: 1, max: 255 }),
+  body("notes").optional().isString().isLength({ max: 1000 }),
+  body("allocationMode").optional().isIn(["custom", "equal"]),
+  body("allocations").isArray({ min: 1, max: 50 }),
+  body("allocations.*.sponsorshipId").isMongoId(),
+  body("allocations.*.childId").isMongoId(),
+  body("allocations.*.amount").isInt({ min: 1, max: 1000000 }),
+];
 
 router.post("/public/pledges", publicPledgeLimiter, createPublicPledge);
-router.post("/stripe/create-session", createStripeCheckoutSession);
+router.post("/stripe/payment-link-pledges", publicPledgeLimiter, createPublicStripePaymentLinkPledge);
+router.post(
+  "/stripe/create-session",
+  stripeCheckoutSessionLimiter,
+  createStripeCheckoutSession,
+);
+router.get("/settings/ach", requireAuth, requireRole("admin"), getAchSettings);
+router.put("/settings/ach", requireAuth, requireRole("admin"), updateAchSettings);
+router.get("/settings/stripe-payment-link/public", getPublicStripePaymentLink);
+router.get("/settings/stripe-payment-link", requireAuth, requireRole("admin"), getAdminStripePaymentLink);
+router.put("/settings/stripe-payment-link", requireAuth, requireRole("admin"), updateStripePaymentLink);
+router.get(
+  "/public/pledges/pending",
+  requireAuth,
+  requirePermission("sponsorships.view"),
+  getPendingPublicAchPledges,
+);
+router.get(
+  "/stripe/payment-link-pledges/pending",
+  requireAuth,
+  requirePermission("sponsorships.view"),
+  getPendingPublicStripePledges,
+);
+router.post(
+  "/stripe/payment-link-pledges/:id/confirm",
+  requireAuth,
+  requirePermission("sponsorships.manage"),
+  confirmPublicStripePledge,
+);
+router.post(
+  "/public/pledges/:id/retry-ach-email",
+  requireAuth,
+  requireRole("admin"),
+  retryPublicAchInstructionEmail,
+);
 router.post(
   "/public/pledges/:id/confirm-ach",
   requireAuth,
@@ -58,6 +124,28 @@ router.patch(
   "/profile/:id",
   requireAuth,
   requirePermission("sponsorships.manage"),
+  param("id").isMongoId(),
+  body("profile").optional().isObject(),
+  body("profile.fullName").optional().isString().isLength({ min: 2, max: 120 }),
+  body("profile.email").optional().isEmail().isLength({ max: 254 }),
+  body("profile.phone").optional().isString().isLength({ max: 40 }),
+  body("profile.country").optional().isString().isLength({ max: 100 }),
+  body("profile.city").optional().isString().isLength({ max: 100 }),
+  body("profile.state").optional().isString().isLength({ max: 100 }),
+  body("profile.region").optional().isString().isLength({ max: 100 }),
+  body("profile.zipCode").optional().isString().isLength({ max: 30 }),
+  body("profile.bio").optional().isString().isLength({ max: 2000 }),
+  body("donation").optional().isObject(),
+  body("donation.amount").optional().isFloat({ min: 0, max: 100000 }),
+  body("donation.period").optional().isIn(["Monthly", "3 Months", "6 Months", "Yearly"]),
+  body("donation.expectedFundsDate")
+    .optional({ values: "falsy" })
+    .isISO8601({ strict: true, strictSeparator: true }),
+  body("donation.remindByEmail").optional().isBoolean(),
+  body("image").optional().isObject(),
+  body("image.url").optional().isURL({ protocols: ["https"], require_protocol: true }),
+  body("image.public_id").optional().isString().isLength({ min: 1, max: 255 }),
+  validateRequest,
   updateSponsorProfile,
 );
 
@@ -122,6 +210,9 @@ router.post(
   "/:sponsorId/payments/split",
   requireAuth,
   requirePermission("sponsorships.manage"),
+  param("sponsorId").isMongoId(),
+  splitPaymentFields,
+  validateRequest,
   recordSplitPayment,
 );
 
@@ -153,6 +244,12 @@ router.post(
   "/sponsorship/:id/new/payment",
   requireAuth,
   requirePermission("sponsorships.manage"),
+  param("id").isMongoId(),
+  body("amount").isFloat({ gt: 0, max: 1000000 }),
+  body("method").isIn(["Cash", "Bank Transfer", "Mobile Money", "ACH", "PayPal", "Zelle", "Stripe", "Check", "Other"]),
+  body("transactionId").isString().trim().isLength({ min: 1, max: 255 }),
+  body("notes").optional().isString().isLength({ max: 1000 }),
+  validateRequest,
   createPaymentRecord,
 );
 

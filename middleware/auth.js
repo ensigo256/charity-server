@@ -106,4 +106,13 @@ function requirePermission(permission) {
   };
 }
 
-module.exports = { requireAuth, requirePermission };
+function requireRole(roleName) {
+  return (req, res, next) => {
+    if (String(req.admin?.role || "").toLowerCase() !== String(roleName).toLowerCase()) {
+      return res.status(403).json({ message: "Insufficient permissions" });
+    }
+    return next();
+  };
+}
+
+module.exports = { requireAuth, requirePermission, requireRole };

@@ -13,6 +13,7 @@ const Sponsorships = require("./models/sponsorships");
 const app = express();
 const config = loadConfig();
 const PORT = config.port;
+app.set("trust proxy", config.trustProxyHops);
 
 const corsOptions = {
   origin(origin, callback) {
@@ -70,7 +71,7 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // Health check endpoint
 app.get("/health", (req, res) => {
-  res.status(200).json({ status: "OK", timestamp: new Date().toISOString() });
+  res.status(200).json({ status: "OK", message:"Server is healthy",timestamp: new Date().toISOString() });
 });
 
 // Import routes
