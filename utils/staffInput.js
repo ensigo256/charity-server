@@ -3,6 +3,7 @@ const EDITABLE_STAFF_FIELDS = [
   "email",
   "phone",
   "role",
+  "bio",
   "type",
   "status",
   "photo",

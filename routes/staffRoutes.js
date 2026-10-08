@@ -6,6 +6,7 @@ const {
   updateStaff,
   createStaff,
   getStaff,
+  getPublicStaff,
   deleteStaff,
 } = require("../controllers/staffControllers");
 const { requireAuth, requirePermission } = require("../middleware/auth");
@@ -16,6 +17,7 @@ const staffFields = [
   body("email").isLength({ max: 254 }).isEmail(),
   body("phone").trim().isLength({ min: 3, max: 40 }),
   body("role").trim().isLength({ min: 2, max: 120 }),
+  body("bio").optional().isString().trim().isLength({ max: 1000 }),
   body("type").isIn(["staff", "volunteer"]),
   body("status").optional().isIn(["active", "inactive"]),
   body("photo").optional().isObject(),
@@ -39,6 +41,7 @@ router.post(
   createStaff,
 );
 
+router.get("/public", getPublicStaff);
 router.get("/all", requireAuth, requirePermission("staff.view"), getStaff);
 
 router.delete(

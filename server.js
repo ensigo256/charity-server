@@ -78,6 +78,7 @@ app.get("/health", (req, res) => {
 const blogRoutes = require("./routes/blogRoutes");
 const eventRoutes = require("./routes/eventRoutes.js");
 const staffRoutes = require("./routes/staffRoutes");
+const reviewRoutes = require("./routes/reviewRoutes");
 const messageRoutes = require("./routes/messageRoutes");
 const authRoutes = require("./routes/authRoutes");
 const commentRoutes = require("./routes/commentRoutes");
@@ -92,6 +93,7 @@ const newsletterRoutes = require("./routes/newsletterRoutes");
 app.use("/api/blogs", blogRoutes);
 app.use("/api/events", eventRoutes);
 app.use("/api/staff", staffRoutes);
+app.use("/api/reviews", reviewRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/comments", commentRoutes);

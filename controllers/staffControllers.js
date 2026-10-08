@@ -11,7 +11,7 @@ exports.createStaff = async (req, res) => {
     try {
         
 
-        const { name, email, phone, role, photo, type, status, socialLinks } =
+        const { name, email, phone, role, bio, photo, type, status, socialLinks } =
             pickEditableStaffFields(req.body);
 
         const newStaff = new Staff({
@@ -19,7 +19,7 @@ exports.createStaff = async (req, res) => {
             email,
             phone,
             role,
-            gender,
+            bio,
             photo: photo || { url: "", public_id: "" },
             type,
             status,
@@ -31,7 +31,7 @@ exports.createStaff = async (req, res) => {
         
         res.status(201).json({
             message: "Staff member created successfully",
-            staff: { id: newStaff._id, name: newStaff.name }
+            staff: newStaff,
         });
 
     } catch (error) {
@@ -66,6 +66,18 @@ exports.getStaff = async (req, res) => {
         res.status(500).json({ message: "Server error", error: error.message });
     }
 }
+
+exports.getPublicStaff = async (_req, res) => {
+    try {
+        const staff = await Staff.find({ type: "staff", status: "active" })
+            .sort({ createdAt: -1, _id: -1 })
+            .select("name role bio photo.url")
+            .lean();
+        return res.status(200).json(staff);
+    } catch (error) {
+        return res.status(500).json({ message: "Unable to load staff", error: error.message });
+    }
+};
 
 exports.deleteStaff = async (req, res) => {
     try {
