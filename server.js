@@ -29,7 +29,7 @@ const corsOptions = {
   exposedHeaders: ["X-Page", "X-Page-Size", "X-Total-Count", "X-Page-Count"],
 };
 
-app.use(cors(corsOptions));
+app.use(cors());
 
 // Security middleware
 app.use(
