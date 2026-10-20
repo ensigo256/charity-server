@@ -19,14 +19,12 @@ const {
 const { requireAuth, requirePermission } = require("../middleware/auth");
 const { validateRequest } = require("../middleware/validate");
 const { requireTrustedOrigin } = require("../middleware/csrf");
+const { getAllowedOrigins } = require("../configs/env");
 
-const allowedOrigins = String(
-  process.env.ALLOWED_ORIGINS ||
-    "http://localhost:3000,http://localhost:3001",
-)
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const configuredOrigins = getAllowedOrigins();
+const allowedOrigins = configuredOrigins.length
+  ? configuredOrigins
+  : ["http://localhost:3000", "http://localhost:3001"];
 const trustedOrigin = requireTrustedOrigin(
   allowedOrigins,
 );

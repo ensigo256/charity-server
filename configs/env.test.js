@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { parseOrigins, parseTrustProxyHops } = require("./env");
+const { getAllowedOrigins, parseOrigins, parseTrustProxyHops } = require("./env");
 
 test("proxy trust defaults to disabled and accepts bounded integer hop counts", () => {
   assert.equal(parseTrustProxyHops(undefined), 0);
@@ -17,12 +17,23 @@ test("proxy trust rejects invalid or unbounded hop counts", () => {
 
 test("allowed origins must be exact HTTP(S) origins without paths", () => {
   assert.deepEqual(
-    parseOrigins("https://example.org,http://localhost:3000"),
+    parseOrigins("https://example.org/,http://localhost:3000"),
     ["https://example.org", "http://localhost:3000"],
   );
   for (const value of ["*", "https://example.org/path", "not-an-origin"]) {
     assert.throws(() => parseOrigins(value), /ALLOWED_ORIGINS/);
   }
+});
+
+test("configured allowlist combines CLIENT_URL and comma-separated ALLOWED_ORIGINS", () => {
+  assert.deepEqual(
+    getAllowedOrigins({
+      CLIENT_URL: "https://client.example.org/",
+      ALLOWED_ORIGINS: "https://one.example.org, https://two.example.org",
+      NODE_ENV: "production",
+    }),
+    ["https://client.example.org", "https://one.example.org", "https://two.example.org"],
+  );
 });
 
 test("production allowed origins must use HTTPS", () => {

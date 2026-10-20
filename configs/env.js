@@ -19,14 +19,26 @@ function parseOrigins(value, isProduction = false) {
     }
     if (
       !["http:", "https:"].includes(parsed.protocol) ||
-      parsed.origin !== origin ||
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash ||
       (isProduction && parsed.protocol !== "https:")
     ) {
       throw new Error(`ALLOWED_ORIGINS must contain exact${isProduction ? " HTTPS" : " HTTP(S)"} origins: ${origin}`);
     }
+    origins[origins.indexOf(origin)] = parsed.origin;
   }
 
   return [...new Set(origins)];
+}
+
+function getAllowedOrigins(env = process.env) {
+  const configuredOrigins = [env.CLIENT_URL, env.ALLOWED_ORIGINS]
+    .filter((value) => String(value || "").trim())
+    .join(",");
+  return parseOrigins(configuredOrigins, env.NODE_ENV === "production");
 }
 
 function requireValue(name) {
@@ -56,7 +68,7 @@ function loadConfig() {
     throw new Error('DB_URL in .env must be a MongoDB URI starting with "mongodb://" or "mongodb+srv://"');
   }
   
-  const allowedOrigins = parseOrigins(process.env.ALLOWED_ORIGINS, isProduction);
+  const allowedOrigins = getAllowedOrigins(process.env);
 
   if (isProduction && allowedOrigins.length === 0) {
     throw new Error("ALLOWED_ORIGINS must contain at least one origin in production");
@@ -76,4 +88,4 @@ function loadConfig() {
   };
 }
 
-module.exports = { loadConfig, parseOrigins, parseTrustProxyHops };
+module.exports = { getAllowedOrigins, loadConfig, parseOrigins, parseTrustProxyHops };
