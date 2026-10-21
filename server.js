@@ -15,28 +15,14 @@ const config = loadConfig();
 const PORT = config.port;
 app.set("trust proxy", config.trustProxyHops);
 
-const corsOptions = {
-  origin(origin, callback) {
-    if (!origin || config.allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-
-    return callback(new Error("Origin is not allowed by CORS"));
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  exposedHeaders: ["X-Page", "X-Page-Size", "X-Total-Count", "X-Page-Count"],
-};
-
-app.use(cors(corsOptions));
+app.use(cors())
 
 // Security middleware
-app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-  }),
-);
+//app.use(
+  //helmet({
+   // crossOriginResourcePolicy: { policy: "cross-origin" },
+  //}),
+//);
 
 // Rate limiting
 const limiter = rateLimit({
