@@ -35,7 +35,7 @@
     "nodemailer": "^7.0.2",
     "pg": "^8.16.3",
     "postgres": "^3.4.7",
-    "resend": "^6.32.0",
+    "resend": "^6.34.1",
     "socket.io": "^4.8.1",
     "stripe": "^23.0.0",
     "winston": "^3.11.0"

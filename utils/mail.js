@@ -51,9 +51,9 @@ async function sendEmail(message, {
         ...email,
         ...(email.attachments && { attachments: formatAttachments("resend") }),
       };
-      const { error } = await resendClient.emails.send(resendEmail);
+      const { data, error } = await resendClient.emails.send(resendEmail);
       if (error) throw error;
-      return { sent: true, provider: "resend" };
+      return { sent: true, provider: "resend", providerMessageId: data?.id || null };
     } catch (resendError) {
       const transporter = transporterFactory();
       if (!transporter) {
@@ -67,14 +67,19 @@ async function sendEmail(message, {
           ...email,
           ...(email.attachments && { attachments: formatAttachments("nodemailer") }),
         };
-        await transporter.sendMail(smtpEmail);
+        const result = await transporter.sendMail(smtpEmail);
+        return {
+          sent: true,
+          provider: "nodemailer",
+          fallback: true,
+          providerMessageId: result.messageId || null,
+        };
       } catch (smtpError) {
         throw new AggregateError(
           [resendError, smtpError],
           "Email delivery failed through Resend and SMTP",
         );
       }
-      return { sent: true, provider: "nodemailer", fallback: true };
     }
   }
 
@@ -88,8 +93,12 @@ async function sendEmail(message, {
     ...email,
     ...(email.attachments && { attachments: formatAttachments("nodemailer") }),
   };
-  await transporter.sendMail(smtpEmail);
-  return { sent: true, provider: "nodemailer" };
+  const result = await transporter.sendMail(smtpEmail);
+  return {
+    sent: true,
+    provider: "nodemailer",
+    providerMessageId: result.messageId || null,
+  };
 }
 
 function getBrandConfig() {
@@ -378,11 +387,12 @@ async function sendContactEmails(contact) {
   return { sent: true };
 }
 
-async function sendReplyEmail(contact, reply) {
+async function sendReplyEmail(contact, reply, headers = {}) {
   return sendEmail({
     to: contact.email,
     subject: `Re: ${contact.subject}`,
     text: `Hello ${contact.name},\n\n${reply}\n\nSeeds of Love Foundation`,
+    headers,
   });
 }
 

@@ -59,7 +59,7 @@ function refreshCookieOptions() {
     return {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
-        sameSite: "strict",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
         path: "/api/auth/admin",
         maxAge: 7 * 24 * 60 * 60 * 1000,
     };
@@ -411,4 +411,3 @@ exports.revokeAllAdminSessions = async (req, res) => {
         return res.status(500).json({ message: "Unable to revoke sessions", error: error.message });
     }
 };
-

@@ -83,6 +83,20 @@ app.post(
   },
 );
 
+app.post(
+  "/api/messages/resend/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    try {
+      const { processResendWebhook } = require("./controllers/messageControllers.js.js");
+      await processResendWebhook(req, res);
+    } catch (error) {
+      console.error("Resend webhook route failed:", error);
+      res.status(500).json({ message: "Resend webhook failed." });
+    }
+  },
+);
+
 // parse JSON request bodies
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
