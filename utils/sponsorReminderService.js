@@ -6,6 +6,8 @@ const {
   getSponsorEmailReminderStage,
 } = require("./notificationUtil");
 const { sendSponsorReminderEmail } = require("./mail");
+const { createPaymentPageToken } = require("./stripePaymentPage");
+const { getConfiguredPaymentLink } = require("../controllers/stripePaymentLinkSettingsController");
 
 const MAX_ATTEMPTS = 5;
 const RETRY_BASE_DELAY_MS = 15 * 60 * 1000;
@@ -71,10 +73,12 @@ function buildDeliveryCandidate(sponsorship, referenceDate) {
     dueDate: dueDate.toISOString(),
     stage,
     sponsorships: [{
+      sponsorshipId: String(sponsorship._id),
       amount: sponsorship.amount ?? sponsor.donation?.amount ?? 0,
       currency: sponsorship.currency || "USD",
       frequency: sponsorship.frequency || sponsor.donation?.period || "Monthly",
       children: [childName],
+      paymentPageUrl: "",
     }],
   };
 
@@ -200,6 +204,17 @@ async function deliveryIsStillValid(delivery, referenceDate) {
   const current = [...currentCandidates.values()][0];
   if (!current) return false;
 
+  const existingPaymentPages = new Map(
+    (delivery.payload?.sponsorships || []).map((item) => [
+      item.sponsorshipId,
+      item.paymentPageUrl,
+    ]),
+  );
+  current.payload.sponsorships = current.payload.sponsorships.map((item) => ({
+    ...item,
+    paymentPageUrl:
+      existingPaymentPages.get(item.sponsorshipId) || item.paymentPageUrl || "",
+  }));
   delivery.payload = current.payload;
   await delivery.save();
   return true;
@@ -250,10 +265,40 @@ async function processSponsorReminderEmails({ referenceDate = new Date(), sendEm
     .populate("donor")
     .populate("child");
   const candidates = new Map();
+  const paymentLink = await getConfiguredPaymentLink();
 
   for (const sponsorship of sponsorships) {
     const candidate = buildDeliveryCandidate(sponsorship, referenceDate);
-    if (candidate) mergeCandidate(candidates, candidate);
+    if (!candidate) continue;
+
+    if (sponsorship.donor?.paymentMethod === "stripe" && paymentLink.configured) {
+      const deliveryIdentity = {
+        sponsorId: candidate.sponsorId,
+        dueDateKey: candidate.dueDateKey,
+        stage: candidate.stage,
+      };
+      const existingDelivery = await SponsorReminderDelivery.findOne(deliveryIdentity).lean();
+      if (existingDelivery?.status === "sent" || existingDelivery?.status === "cancelled") {
+        continue;
+      }
+
+      const existingPayment = existingDelivery?.payload?.sponsorships?.find(
+        (item) => item.sponsorshipId === String(sponsorship._id),
+      );
+      if (existingPayment?.paymentPageUrl) {
+        candidate.payload.sponsorships[0].paymentPageUrl = existingPayment.paymentPageUrl;
+      } else {
+        const paymentPage = await createPaymentPageToken({
+          sponsorshipId: sponsorship._id,
+          dueDate: candidate.dueDate,
+          dueDateKey: candidate.dueDateKey,
+          expectedAmount: sponsorship.amount,
+        });
+        candidate.payload.sponsorships[0].paymentPageUrl = paymentPage.url;
+      }
+    }
+
+    mergeCandidate(candidates, candidate);
   }
 
   return deliverQueuedCandidates(candidates, referenceDate, sendEmail);

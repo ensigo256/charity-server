@@ -2,6 +2,17 @@ const StripePaymentLinkSettings = require("../models/stripePaymentLinkSettings")
 
 const SETTINGS_ID = "organization-stripe-payment-link";
 const ALLOWED_HOSTS = new Set(["buy.stripe.com", "donate.stripe.com"]);
+const DEFAULT_ADMIN_ALERT_EMAIL = "info@ensigooflove.org";
+
+function validateAdminAlertEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+    const error = new Error("Enter a valid payment-attempt notification email.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return email;
+}
 
 function validatePaymentLinkUrl(value) {
   const normalized = String(value || "").trim();
@@ -56,7 +67,11 @@ exports.validatePaymentLinkUrl = validatePaymentLinkUrl;
 exports.getAdminStripePaymentLink = async (_req, res) => {
   try {
     const result = await getConfiguredPaymentLink();
-    return res.status(200).json(result);
+    const settings = await StripePaymentLinkSettings.findById(SETTINGS_ID).lean();
+    return res.status(200).json({
+      ...result,
+      adminAlertEmail: settings?.adminAlertEmail || DEFAULT_ADMIN_ALERT_EMAIL,
+    });
   } catch {
     return res.status(500).json({ message: "Unable to load Stripe Payment Link settings." });
   }
@@ -74,15 +89,19 @@ exports.getPublicStripePaymentLink = async (_req, res) => {
 exports.updateStripePaymentLink = async (req, res) => {
   try {
     const paymentLinkUrl = validatePaymentLinkUrl(req.body?.paymentLinkUrl);
+    const adminAlertEmail = validateAdminAlertEmail(
+      req.body?.adminAlertEmail || DEFAULT_ADMIN_ALERT_EMAIL,
+    );
     await StripePaymentLinkSettings.findByIdAndUpdate(
       SETTINGS_ID,
-      { $set: { paymentLinkUrl, updatedBy: req.admin?.id } },
+      { $set: { paymentLinkUrl, adminAlertEmail, updatedBy: req.admin?.id } },
       { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true },
     );
     return res.status(200).json({
       message: "Stripe Payment Link saved.",
       configured: true,
       paymentLinkUrl,
+      adminAlertEmail,
     });
   } catch (error) {
     return res.status(error.statusCode || 500).json({
@@ -90,3 +109,6 @@ exports.updateStripePaymentLink = async (req, res) => {
     });
   }
 };
+
+exports.validateAdminAlertEmail = validateAdminAlertEmail;
+exports.DEFAULT_ADMIN_ALERT_EMAIL = DEFAULT_ADMIN_ALERT_EMAIL;

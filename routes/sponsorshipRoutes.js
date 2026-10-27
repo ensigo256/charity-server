@@ -31,6 +31,13 @@ const {
 const { requireAuth, requirePermission, requireRole } = require("../middleware/auth");
 const { getAchSettings, updateAchSettings } = require("../controllers/achSettingsController");
 const {
+  getStripePaymentPage,
+  startStripePaymentAttempt,
+  getStripePaymentAttempts,
+  approveStripePaymentAttempt,
+  expireStripePaymentAttempt,
+} = require("../controllers/stripePaymentAttemptController");
+const {
   getAdminStripePaymentLink,
   getPublicStripePaymentLink,
   updateStripePaymentLink,
@@ -45,6 +52,13 @@ const publicPledgeLimiter = rateLimit({
 const stripeCheckoutSessionLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many checkout attempts. Please try again later." },
+});
+const stripePaymentAttemptLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: "Too many checkout attempts. Please try again later." },
@@ -65,6 +79,12 @@ const splitPaymentFields = [
 
 router.post("/public/pledges", publicPledgeLimiter, createPublicPledge);
 router.post("/stripe/payment-link-pledges", publicPledgeLimiter, createPublicStripePaymentLinkPledge);
+router.get("/stripe/payment-pages/:token", getStripePaymentPage);
+router.post(
+  "/stripe/payment-pages/:token/attempts",
+  stripePaymentAttemptLimiter,
+  startStripePaymentAttempt,
+);
 router.post(
   "/stripe/create-session",
   stripeCheckoutSessionLimiter,
@@ -86,6 +106,32 @@ router.get(
   requireAuth,
   requirePermission("sponsorships.view"),
   getPendingPublicStripePledges,
+);
+router.get(
+  "/stripe/payment-attempts/pending",
+  requireAuth,
+  requirePermission("sponsorships.view"),
+  getStripePaymentAttempts,
+);
+router.post(
+  "/stripe/payment-attempts/:id/approve",
+  requireAuth,
+  requirePermission("sponsorships.manage"),
+  param("id").isMongoId(),
+  body("amount").isFloat({ gt: 0, max: 100000 }),
+  body("date").optional().isISO8601(),
+  body("stripeReference").isString().trim().matches(/^pi_[A-Za-z0-9]+$/),
+  validateRequest,
+  approveStripePaymentAttempt,
+);
+router.post(
+  "/stripe/payment-attempts/:id/expire",
+  requireAuth,
+  requirePermission("sponsorships.manage"),
+  param("id").isMongoId(),
+  body("notes").optional().isString().isLength({ max: 1000 }),
+  validateRequest,
+  expireStripePaymentAttempt,
 );
 router.post(
   "/stripe/payment-link-pledges/:id/confirm",

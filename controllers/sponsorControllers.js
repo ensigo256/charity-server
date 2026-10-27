@@ -18,6 +18,7 @@ const { isValidCloudinaryImageReference } = require("../utils/cloudinaryImageRef
 const { pickEditableDonationFields } = require("../utils/sponsorProfileInput");
 const { normalizeManualPaymentInput } = require("../utils/manualPaymentInput");
 const { calculateAchReceipt } = require("../utils/achReceipt");
+const { createPaymentPageToken } = require("../utils/stripePaymentPage");
 
 function normalizeSplitPaymentAllocationInput(payload = {}) {
   const totalAmount = Number(payload.amount);
@@ -514,11 +515,14 @@ exports.createPublicStripePaymentLinkPledge = async (req, res) => {
   if (!paymentLink.configured) {
     return res.status(503).json({ message: "Stripe donations are not configured yet." });
   }
-  const paymentLinkUrl = paymentLink.paymentLinkUrl;
-  const paymentUrlForReference = (reference) => {
-    const url = new URL(paymentLinkUrl);
-    url.searchParams.set("client_reference_id", reference);
-    return url.toString();
+  const paymentPageForSponsorship = async (sponsorship) => {
+    const token = await createPaymentPageToken({
+      sponsorshipId: sponsorship._id,
+      dueDate: sponsorship.startDate || new Date(),
+      dueDateKey: "initial",
+      expectedAmount: sponsorship.amount,
+    });
+    return token.path;
   };
 
   const session = await mongoose.startSession();
@@ -536,7 +540,7 @@ exports.createPublicStripePaymentLinkPledge = async (req, res) => {
     if (existingPledge) {
       return res.status(200).json({
         message: "This pledge has already been submitted.",
-        paymentUrl: paymentUrlForReference(existingPledge.publicPledgeReference),
+        paymentPagePath: await paymentPageForSponsorship(existingPledge),
         pledge: {
           id: existingPledge._id,
           reference: existingPledge.publicPledgeReference,
@@ -629,8 +633,8 @@ exports.createPublicStripePaymentLinkPledge = async (req, res) => {
     });
 
     return res.status(201).json({
-      message: "Pledge saved. Payment must be verified by staff before sponsorship activation.",
-      paymentUrl: paymentUrlForReference(pledgeReference),
+      message: "Pledge saved. Continue to Stripe from the payment page; staff must verify payment before activation.",
+      paymentPagePath: await paymentPageForSponsorship(sponsorship),
       pledge: {
         id: sponsorship._id,
         reference: pledgeReference,
@@ -648,7 +652,7 @@ exports.createPublicStripePaymentLinkPledge = async (req, res) => {
       if (existingPledge) {
         return res.status(200).json({
           message: "This pledge has already been submitted.",
-          paymentUrl: paymentUrlForReference(existingPledge.publicPledgeReference),
+          paymentPagePath: await paymentPageForSponsorship(existingPledge),
           pledge: {
             id: existingPledge._id,
             reference: existingPledge.publicPledgeReference,
@@ -744,6 +748,8 @@ exports.confirmPublicStripePledge = async (req, res) => {
       !/^pi_[A-Za-z0-9]+$/.test(normalizedReference) ||
       !Number.isFinite(receivedAmount) ||
       receivedAmount <= 0 ||
+      receivedAmount > 100000 ||
+      String(notes).length > 1000 ||
       Number.isNaN(receivedDate.getTime())
     ) {
       return res.status(400).json({
@@ -768,6 +774,17 @@ exports.confirmPublicStripePledge = async (req, res) => {
       const donor = await Sponsor.findById(sponsorship.donor).session(session);
       if (!donor || donor.paymentMethod !== "stripe") {
         const error = new Error("This pledge is not a Stripe Payment Link pledge.");
+        error.statusCode = 409;
+        throw error;
+      }
+      const remainingAmount = Math.max(
+        Number(sponsorship.amount || 0) - Number(sponsorship.totalPaid || 0),
+        0,
+      );
+      if (receivedAmount > remainingAmount) {
+        const error = new Error(
+          "The verified amount exceeds the remaining pledge. Do not record it; contact management to resolve the excess.",
+        );
         error.statusCode = 409;
         throw error;
       }

@@ -123,6 +123,17 @@ function escapeHtml(value) {
   })[character]);
 }
 
+function getSafeHttpsUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:" && !url.username && !url.password
+      ? url.toString()
+      : "";
+  } catch {
+    return "";
+  }
+}
+
 function buildAchInstructionsEmail({ name, pledge, settings } = {}) {
   const brand = getBrandConfig();
   const safeName = escapeHtml(name || "Sponsor");
@@ -234,7 +245,8 @@ function buildSponsorReminderEmail({
     const children =
       (item.children || []).map(escapeHtml).join(", ") ||
       "your sponsored child";
-    return { amount, currency, frequency, children };
+    const paymentPageUrl = getSafeHttpsUrl(item.paymentPageUrl);
+    return { amount, currency, frequency, children, paymentPageUrl };
   });
   const rows = details
     .map(
@@ -246,6 +258,7 @@ function buildSponsorReminderEmail({
       </td>
       <td align="right" style="padding:14px 0;border-bottom:1px solid #e4ebe6;color:#25352d;font-size:15px;font-weight:700;white-space:nowrap;">
         ${item.currency} ${item.amount}
+        ${item.paymentPageUrl ? `<a href="${escapeHtml(item.paymentPageUrl)}" style="display:inline-block;margin-top:8px;color:#145c3a;font-size:13px;font-weight:600;">Review and pay</a>` : ""}
       </td>
     </tr>`,
     )
@@ -272,6 +285,7 @@ function buildSponsorReminderEmail({
             <thead><tr><th align="left" style="padding:0 0 8px;color:#63736a;font-size:11px;text-transform:uppercase;">Sponsorship</th><th align="right" style="padding:0 0 8px;color:#63736a;font-size:11px;text-transform:uppercase;">Contribution</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
+          ${details.some((item) => item.paymentPageUrl) ? `<p style="margin:0 0 18px;font-size:13px;line-height:1.6;color:#63736a;">Stripe payments are one-time payments; this reminder cadence does not create an automatic recurring charge. The payment page will show the amount due and instructions.</p>` : ""}
           <p style="margin:0;font-size:14px;line-height:1.65;color:#46564d;">Your support makes a meaningful difference. If you have already made this contribution, thank you. For questions or to let us know about a transfer, reply to this email${contact ? ` or contact <a href="mailto:${contact}" style="color:#145c3a;">${contact}</a>` : ""}.</p>
           <p style="margin:20px 0 0;font-size:14px;color:#46564d;">With gratitude,<br /><strong>${safeOrgName}</strong></p>
         </div>
@@ -284,7 +298,7 @@ function buildSponsorReminderEmail({
   const textDetails = details
     .map(
       (item) =>
-        `- ${item.children}: ${item.currency} ${item.amount} (${item.frequency})`,
+        `- ${item.children}: ${item.currency} ${item.amount} (${item.frequency})${item.paymentPageUrl ? `\n  Review and pay: ${item.paymentPageUrl}` : ""}`,
     )
     .join("\n");
   const text = [
@@ -295,6 +309,10 @@ function buildSponsorReminderEmail({
     `Expected date: ${formattedDate}`,
     "",
     textDetails,
+    "",
+    ...(details.some((item) => item.paymentPageUrl)
+      ? ["Stripe payments are one-time payments; this reminder cadence does not create an automatic recurring charge. The payment page shows the amount due."]
+      : []),
     "",
     "If you have already made this contribution, thank you. For questions or to let us know about a transfer, reply to this email.",
     "",
