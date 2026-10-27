@@ -3,6 +3,7 @@ const Childern = require("../models/childProfile");
 const Sponsor = require("../models/sponsor");
 const Sponsorships = require("../models/sponsorships");
 const AchSettings = require("../models/achSettings");
+const AchReceiptReference = require("../models/achReceiptReference");
 const Admin = require("../models/admin");
 const Notification = require("../models/notification");
 const deleteImage = require("../utils/deleteCloudImg");
@@ -16,6 +17,7 @@ const { getStripeSessionValidationError } = require("../utils/stripePaymentValid
 const { isValidCloudinaryImageReference } = require("../utils/cloudinaryImageReference");
 const { pickEditableDonationFields } = require("../utils/sponsorProfileInput");
 const { normalizeManualPaymentInput } = require("../utils/manualPaymentInput");
+const { calculateAchReceipt } = require("../utils/achReceipt");
 
 function normalizeSplitPaymentAllocationInput(payload = {}) {
   const totalAmount = Number(payload.amount);
@@ -83,15 +85,7 @@ const stripe = process.env.STRIPE_SECRET_KEY
 const ACTIVE_SPONSORSHIP_STATUSES = ["Active", "Pending"];
 const CLOSING_SPONSORSHIP_STATUSES = ["Completed", "Cancelled", "Paused"];
 const MANUAL_PAYMENT_METHODS = [
-  "Cash",
-  "Bank Transfer",
-  "Mobile Money",
   "ACH",
-  "PayPal",
-  "Zelle",
-  "Stripe",
-  "Check",
-  "Other",
 ];
 const PROFILE_COMPLETION_FIELDS = [
   "fullName",
@@ -235,12 +229,19 @@ exports.createSponsor = async (req, res) => {
       phone: profile.phone,
     };
 
-    const paymentMethod =
+    const rawPaymentMethod =
       typeof data.paymentMethod === "string"
         ? data.paymentMethod
         : data.paymentMethod?.paymentMethod ||
-          data.paymentMethod?.method ||
-          "Not specified";
+          data.paymentMethod?.method;
+    const paymentMethod = rawPaymentMethod
+      ? String(rawPaymentMethod).toLowerCase()
+      : undefined;
+    if (paymentMethod && !["ach", "stripe"].includes(paymentMethod)) {
+      return res.status(400).json({
+        message: "Only ACH and Stripe are supported for new sponsorships.",
+      });
+    }
 
     const donation = {
       ...(data.donation || {
@@ -836,14 +837,17 @@ exports.confirmPublicAchPledge = async (req, res) => {
 
   try {
     const { amount, date, bankReference, notes = "" } = req.body || {};
-    const normalizedReference = String(bankReference || "").trim();
+    const normalizedReference = String(bankReference || "").trim().toUpperCase();
     const receivedAmount = Number(amount);
     const receivedDate = date ? new Date(date) : new Date();
 
     if (
       !normalizedReference ||
+      normalizedReference.length > 255 ||
       !Number.isFinite(receivedAmount) ||
       receivedAmount <= 0 ||
+      receivedAmount > 100000 ||
+      String(notes).length > 1000 ||
       Number.isNaN(receivedDate.getTime())
     ) {
       return res.status(400).json({
@@ -874,6 +878,42 @@ exports.confirmPublicAchPledge = async (req, res) => {
         throw error;
       }
 
+      if (
+        sponsorship.bankReference?.trim().toUpperCase() === normalizedReference ||
+        sponsorship.payments.some(
+          (payment) =>
+            payment.transactionId?.trim().toUpperCase() === normalizedReference,
+        )
+      ) {
+        const error = new Error("That bank reference has already been recorded.");
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const escapedReference = normalizedReference.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&",
+      );
+      const referencePattern = new RegExp(`^${escapedReference}$`, "i");
+      const duplicateReference = await Sponsorships.exists({
+        _id: { $ne: sponsorship._id },
+        $or: [
+          { "payments.transactionId": referencePattern },
+          { bankReference: referencePattern },
+        ],
+      }).session(session);
+      if (duplicateReference) {
+        const error = new Error("That bank reference has already been recorded.");
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const funding = calculateAchReceipt({
+        pledgedAmount: sponsorship.amount,
+        totalPaid: sponsorship.totalPaid || 0,
+        receivedAmount,
+      });
+
       const child = await Childern.findById(sponsorship.child).session(session);
       if (!child || child.sponsorshipStatus !== "Available") {
         const error = new Error(
@@ -883,6 +923,10 @@ exports.confirmPublicAchPledge = async (req, res) => {
         throw error;
       }
 
+      await AchReceiptReference.create(
+        [{ reference: normalizedReference, sponsorship: sponsorship._id }],
+        { session },
+      );
       sponsorship.payments.push({
         date: receivedDate,
         amount: receivedAmount,
@@ -894,22 +938,30 @@ exports.confirmPublicAchPledge = async (req, res) => {
         recordedBy: req.admin?.id,
         status: "Completed",
       });
-      sponsorship.bankReference = normalizedReference;
-      sponsorship.status = "Active";
-      sponsorship.totalPaid = (sponsorship.totalPaid || 0) + receivedAmount;
+      sponsorship.bankReference =
+        sponsorship.bankReference || normalizedReference;
+      sponsorship.status = funding.fullyFunded ? "Active" : "Pending";
+      sponsorship.totalPaid = funding.totalPaid;
       sponsorship.lastPayment = receivedDate;
-      sponsorship.startDate = sponsorship.startDate || receivedDate;
+      if (funding.fullyFunded) {
+        sponsorship.startDate = sponsorship.startDate || receivedDate;
+      }
       await sponsorship.save({ session });
 
-      child.sponsor = sponsorship.donor;
-      child.sponsorshipStatus = "Sponsored";
-      await child.save({ session });
+      if (funding.fullyFunded) {
+        child.sponsor = sponsorship.donor;
+        child.sponsorshipStatus = "Sponsored";
+        await child.save({ session });
+      }
       updatedSponsorship = sponsorship;
     });
 
     return res.status(200).json({
-      message: "ACH receipt recorded and sponsorship activated.",
+      message: updatedSponsorship.status === "Active"
+        ? "ACH receipt recorded and sponsorship activated."
+        : "ACH receipt recorded. The pledge remains pending until fully funded.",
       sponsorship: updatedSponsorship,
+      fullyFunded: updatedSponsorship.status === "Active",
     });
   } catch (error) {
     if (error?.code === 11000) {
@@ -1961,6 +2013,13 @@ exports.reassignSponsor = async (req, res) => {
         .json({ message: "Child id is required for sponsor reassignment." });
     }
 
+    const requestedPaymentMethod = String(data.paymentMethod || "").toLowerCase();
+    if (requestedPaymentMethod && !["ach", "stripe"].includes(requestedPaymentMethod)) {
+      return res.status(400).json({
+        message: "Only ACH and Stripe are supported for new sponsorships.",
+      });
+    }
+
     if (!mongoose.isValidObjectId(childId)) {
       return res.status(400).json({ message: "Invalid child id" });
     }
@@ -2021,7 +2080,7 @@ exports.reassignSponsor = async (req, res) => {
           }),
           remindByEmail: data.donation?.remindByEmail ?? data.remindByEmail ?? true,
         },
-        paymentMethod: data.paymentMethod || "zelle",
+        paymentMethod: requestedPaymentMethod || undefined,
       });
 
       await targetSponsor.save();

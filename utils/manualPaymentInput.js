@@ -1,13 +1,5 @@
 const ALLOWED_MANUAL_PAYMENT_METHODS = [
-  "Cash",
-  "Bank Transfer",
-  "Mobile Money",
   "ACH",
-  "PayPal",
-  "Zelle",
-  "Stripe",
-  "Check",
-  "Other",
 ];
 
 function normalizeManualPaymentInput(data = {}) {

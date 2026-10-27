@@ -46,7 +46,6 @@ const sponsorsSchema = new mongoose.Schema(
     paymentMethod: {
       type: String,
       enum: ["zelle", "stripe", "check", "card", "paypal", "ach"],
-      required: true,
     },
     profileStatus: {
       type: String,

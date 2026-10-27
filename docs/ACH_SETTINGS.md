@@ -2,6 +2,10 @@
 
 ACH sponsorship pledges use manual bank transfer. The API stores organization transfer details encrypted in MongoDB and sends them to the sponsor by email. Public pledge responses contain only pledge and email-delivery status; bank details are never returned by a public API.
 
+The pledge remains pending until verified receipts cover the pledged amount. Staff should record a receipt only after funds appear in the organization account; partial receipts are retained as completed receipts while the pledge remains pending. Each transfer must have a unique bank reference. If a received amount exceeds the remaining pledge, the confirmation is rejected and must be reviewed before staff record a corrected receipt. Pending pledges do not reserve a child; if another pledge is confirmed first, staff must resolve that conflict before confirming the remaining pledge.
+
+ACH is the only manually recorded payment method. Stripe receipts must be confirmed through the verified Stripe payment flow. Other legacy payment-method values remain readable for historical sponsorship and payment records but are not accepted for new manual payments.
+
 ## Encryption key
 
 Set `ACH_SETTINGS_ENCRYPTION_KEY` as a server-side deployment secret. It must be exactly 64 hexadecimal characters representing 32 random bytes. Generate a key with:
