@@ -71,7 +71,7 @@ const childrenProfilesSchema = new mongoose.Schema(
     location: { type: String, trim: true },
     needs: { type: String, trim: true },
     sponsorshipStatus: { type: String, enum: ['Sponsored', 'Available'], default: 'Available' },
-    sponsor: { type: mongoose.Schema.Types.ObjectId, ref: 'Sponsor' },
+    sponsor: { type: mongoose.Schema.Types.ObjectId, ref: 'Sponsor', deprecated: true },
     school: { type: String, trim: true },
     monthlyNeed: { type: Number, trim: true },
     publicPosterApproved: { type: Boolean, default: false },
@@ -102,7 +102,6 @@ const childrenProfilesSchema = new mongoose.Schema(
 );
 childrenProfilesSchema.index({ createdAt: -1, _id: -1 });
 childrenProfilesSchema.index({ sponsorshipStatus: 1, createdAt: -1, _id: -1 });
-childrenProfilesSchema.index({ sponsor: 1, createdAt: -1, _id: -1 });
 
 childrenProfilesSchema.pre('save', function(next) {
   next();

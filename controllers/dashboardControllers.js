@@ -41,6 +41,12 @@ exports.getDashboardSummary = async (_req, res) => {
     const getChildName = (child) =>
       [child?.firstName, child?.secondName].filter(Boolean).join(" ") ||
       "Unknown child";
+    const sponsoredChildIds = new Set(
+      currentSponsorships
+        .map((item) => item.child?._id || item.child)
+        .filter(Boolean)
+        .map(String),
+    );
 
     const recentPayments = [...allPayments]
       .sort(
@@ -63,12 +69,8 @@ exports.getDashboardSummary = async (_req, res) => {
     return res.status(200).json({
       children: {
         total: children.length,
-        sponsored: children.filter(
-          (child) => child.sponsorshipStatus === "Sponsored",
-        ).length,
-        available: children.filter(
-          (child) => child.sponsorshipStatus === "Available",
-        ).length,
+        sponsored: sponsoredChildIds.size,
+        available: Math.max(children.length - sponsoredChildIds.size, 0),
       },
       sponsors: { totalActive: sponsors },
       sponsorships: {

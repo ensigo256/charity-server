@@ -145,21 +145,22 @@ const normalizeSponsorProfile = (data) => {
   };
 };
 
-const syncChildSponsorState = async (
-  childId,
-  sponsorId,
-  status = "Sponsored",
-) => {
+const syncChildSponsorState = async (childId) => {
   if (!childId) return;
 
-  const childProfile = await Childern.findById(childId);
-  if (!childProfile) return;
-
-  const isActive = ["Active", "Pending"].includes(status);
-
-  childProfile.sponsor = isActive ? sponsorId : null;
-  childProfile.sponsorshipStatus = isActive ? "Sponsored" : "Available";
-  await childProfile.save();
+  const hasActiveSponsorship = await Sponsorships.exists({
+    child: childId,
+    status: { $in: ACTIVE_SPONSORSHIP_STATUSES },
+  });
+  await Childern.updateOne(
+    { _id: childId },
+    {
+      $set: {
+        sponsorshipStatus: hasActiveSponsorship ? "Sponsored" : "Available",
+      },
+      $unset: { sponsor: "" },
+    },
+  );
 };
 
 const upsertSponsorSponsorship = async ({
@@ -172,6 +173,8 @@ const upsertSponsorSponsorship = async ({
 
   const existingSponsorship = await Sponsorships.findOne({
     child: childId,
+    donor: sponsorId,
+    status: { $in: ACTIVE_SPONSORSHIP_STATUSES },
   }).sort({ createdAt: -1 });
 
   if (!existingSponsorship) {
@@ -195,7 +198,7 @@ const upsertSponsorSponsorship = async ({
     });
 
     await newSponsorship.save();
-    await syncChildSponsorState(childId, sponsorId, newSponsorship.status);
+    await syncChildSponsorState(childId);
     return newSponsorship;
   }
 
@@ -215,7 +218,7 @@ const upsertSponsorSponsorship = async ({
   existingSponsorship.status = data.status || "Active";
   existingSponsorship.notes = data.notes || existingSponsorship.notes || "";
   await existingSponsorship.save();
-  await syncChildSponsorState(childId, sponsorId, existingSponsorship.status);
+  await syncChildSponsorState(childId);
   return existingSponsorship;
 };
 
@@ -266,12 +269,17 @@ exports.createSponsor = async (req, res) => {
       ...data,
       profile,
       sponsor: safeSponsor,
-      child: childId,
       paymentMethod,
       donation,
       profileStatus: getProfileStatus(profile),
       source: data.source || "website",
     };
+    delete payLoad.child;
+    delete payLoad.childId;
+    delete payLoad.emailVerified;
+    delete payLoad.emailVerifiedAt;
+    payLoad.emailVerified = false;
+    payLoad.emailVerifiedAt = null;
 
     const newSponsor = new Sponsor(payLoad);
     await newSponsor.save();
@@ -369,10 +377,7 @@ exports.createPublicPledge = async (req, res) => {
       });
     }
 
-    const child = await Childern.findOne({
-      _id: childId,
-      sponsorshipStatus: "Available",
-    });
+    const child = await Childern.findById(childId);
     if (!child) {
       return res.status(409).json({
         message: "This child is no longer available for sponsorship.",
@@ -391,12 +396,9 @@ exports.createPublicPledge = async (req, res) => {
     await session.withTransaction(async () => {
       const availableChild = await Childern.findOne({
         _id: childId,
-        sponsorshipStatus: "Available",
       }).session(session);
       if (!availableChild) {
-        const error = new Error(
-          "This child is no longer available for sponsorship.",
-        );
+        const error = new Error("This child profile is no longer available.");
         error.statusCode = 409;
         throw error;
       }
@@ -425,7 +427,6 @@ exports.createPublicPledge = async (req, res) => {
               region: String(location.region || "").trim(),
               zipCode: String(location.zipCode || "").trim(),
             },
-            child: child._id,
             donation: {
               amount,
               period,
@@ -581,10 +582,9 @@ exports.createPublicStripePaymentLinkPledge = async (req, res) => {
     await session.withTransaction(async () => {
       const availableChild = await Childern.findOne({
         _id: childId,
-        sponsorshipStatus: "Available",
       }).session(session);
       if (!availableChild) {
-        const error = new Error("This child is no longer available for sponsorship.");
+        const error = new Error("This child profile is no longer available.");
         error.statusCode = 409;
         throw error;
       }
@@ -604,7 +604,6 @@ exports.createPublicStripePaymentLinkPledge = async (req, res) => {
             region: String(location.region || "").trim(),
             zipCode: String(location.zipCode || "").trim(),
           },
-          child: availableChild._id,
           donation: { amount, period, remindByEmail: donation.remindByEmail !== false },
           paymentMethod: "stripe",
           profileStatus: getProfileStatus(profile),
@@ -772,7 +771,10 @@ exports.confirmPublicStripePledge = async (req, res) => {
         throw error;
       }
       const donor = await Sponsor.findById(sponsorship.donor).session(session);
-      if (!donor || donor.paymentMethod !== "stripe") {
+      if (
+        !donor ||
+        (sponsorship.paymentMethod || donor.paymentMethod) !== "stripe"
+      ) {
         const error = new Error("This pledge is not a Stripe Payment Link pledge.");
         error.statusCode = 409;
         throw error;
@@ -798,8 +800,8 @@ exports.confirmPublicStripePledge = async (req, res) => {
       }
 
       const child = await Childern.findById(sponsorship.child).session(session);
-      if (!child || (child.sponsorshipStatus !== "Available" && child.sponsor?.toString() !== donor._id.toString())) {
-        const error = new Error("The child is no longer available; resolve the pledge conflict before confirming.");
+      if (!child) {
+        const error = new Error("The child profile no longer exists.");
         error.statusCode = 409;
         throw error;
       }
@@ -822,7 +824,6 @@ exports.confirmPublicStripePledge = async (req, res) => {
       if (isFullyFunded) {
         sponsorship.status = "Active";
         sponsorship.startDate = sponsorship.startDate || receivedDate;
-        child.sponsor = donor._id;
         child.sponsorshipStatus = "Sponsored";
         await child.save({ session });
       }
@@ -889,7 +890,10 @@ exports.confirmPublicAchPledge = async (req, res) => {
       }
 
       const donor = await Sponsor.findById(sponsorship.donor).session(session);
-      if (!donor || donor.paymentMethod !== "ach") {
+      if (
+        !donor ||
+        (sponsorship.paymentMethod || donor.paymentMethod) !== "ach"
+      ) {
         const error = new Error("This pledge is not a manual ACH pledge.");
         error.statusCode = 409;
         throw error;
@@ -932,10 +936,8 @@ exports.confirmPublicAchPledge = async (req, res) => {
       });
 
       const child = await Childern.findById(sponsorship.child).session(session);
-      if (!child || child.sponsorshipStatus !== "Available") {
-        const error = new Error(
-          "The child is no longer available; resolve the pledge conflict before confirming.",
-        );
+      if (!child) {
+        const error = new Error("The child profile no longer exists.");
         error.statusCode = 409;
         throw error;
       }
@@ -966,7 +968,6 @@ exports.confirmPublicAchPledge = async (req, res) => {
       await sponsorship.save({ session });
 
       if (funding.fullyFunded) {
-        child.sponsor = sponsorship.donor;
         child.sponsorshipStatus = "Sponsored";
         await child.save({ session });
       }
@@ -1026,14 +1027,11 @@ exports.createStripeCheckoutSession = async (req, res) => {
       return res.status(400).json({ message: "Donation period is invalid." });
     }
 
-    const child = await Childern.findOne({
-      _id: childId,
-      sponsorshipStatus: "Available",
-    });
+    const child = await Childern.findById(childId);
 
     if (!child) {
       return res.status(409).json({
-        message: "This child is no longer available for sponsorship.",
+        message: "This child profile is no longer available.",
       });
     }
 
@@ -1062,7 +1060,6 @@ exports.createStripeCheckoutSession = async (req, res) => {
         region: String(location.region || "").trim(),
         zipCode: String(location.zipCode || "").trim(),
       },
-      child: child._id,
       donation: {
         amount,
         period,
@@ -1234,7 +1231,6 @@ exports.handleStripeWebhook = async (req, res) => {
 
       const child = await Childern.findById(sponsorship.child).session(transaction);
       if (child) {
-        child.sponsor = sponsorship.donor;
         child.sponsorshipStatus = "Sponsored";
         await child.save({ session: transaction });
       }
@@ -1327,6 +1323,7 @@ exports.cancelPublicPledge = async (req, res) => {
           status: "Cancelled",
           notes: String(req.body?.notes || "Pledge cancelled by staff.").trim(),
         },
+        $unset: { activePairKey: "" },
       },
       { new: true, runValidators: true },
     );
@@ -1334,6 +1331,7 @@ exports.cancelPublicPledge = async (req, res) => {
     if (!sponsorship) {
       return res.status(404).json({ message: "Pending public pledge not found." });
     }
+    await syncChildSponsorState(sponsorship.child);
     return res.status(200).json({
       message: "Pending pledge cancelled.",
       sponsorship,
@@ -1410,22 +1408,16 @@ exports.archiveSponsorProfile = async (req, res) => {
 
     await Sponsorships.updateMany(
       { donor: sponsor._id, status: { $in: ACTIVE_SPONSORSHIP_STATUSES } },
-      { $set: { status: "Cancelled" } },
+      { $set: { status: "Cancelled" }, $unset: { activePairKey: "" } },
     );
 
-    const childIds = sponsorships.map((sponsorship) => sponsorship.child);
-    if (childIds.length > 0) {
-      await Childern.updateMany(
-        { _id: { $in: childIds }, sponsor: sponsor._id },
-        { $set: { sponsor: null, sponsorshipStatus: "Available" } },
-      );
-    }
+    const childIds = [...new Set(sponsorships.map((sponsorship) => String(sponsorship.child)))];
+    await Promise.all(childIds.map((childId) => syncChildSponsorState(childId)));
 
     const archivedSponsor = await Sponsor.findByIdAndUpdate(
       sponsor._id,
       {
         $set: {
-          child: null,
           isArchived: true,
           archivedAt: new Date(),
         },
@@ -1584,6 +1576,14 @@ exports.updateSponsorProfile = async (req, res) => {
       ...(sponsor.profile?.toObject?.() || sponsor.profile || {}),
       ...profile,
     };
+    if (
+      profile.email !== undefined &&
+      String(profile.email).trim().toLowerCase() !==
+        String(sponsor.profile?.email || "").trim().toLowerCase()
+    ) {
+      sponsor.emailVerified = false;
+      sponsor.emailVerifiedAt = null;
+    }
     const profileStatus = getProfileStatus(mergedProfile);
 
     if (image !== undefined && (!image?.url || !image?.public_id)) {
@@ -1597,6 +1597,9 @@ exports.updateSponsorProfile = async (req, res) => {
       profile: mergedProfile,
       profileStatus,
       source: "dashboard",
+      ...(sponsor.emailVerified === false
+        ? { emailVerified: false, emailVerifiedAt: null }
+        : {}),
     };
 
     if (Object.keys(donationUpdate).length > 0) {
@@ -1695,7 +1698,11 @@ exports.createPaymentRecord = async (req, res) => {
       {
         $push: { payments: newPayment },
         $inc: { totalPaid: paymentInput.amount },
-        $set: { status: "Active", lastPayment: paymentDate },
+        $set: {
+          status: "Active",
+          lastPayment: paymentDate,
+          activePairKey: `${sponsorship.child}:${sponsorship.donor}`,
+        },
       },
       { new: true, runValidators: true },
     );
@@ -1934,9 +1941,7 @@ exports.updateSponsorshipStatus = async (req, res) => {
         .json({ message: "A valid sponsorship status is required." });
     }
 
-    const sponsorship = await Sponsorships.findById(req.params.id).populate(
-      "child",
-    );
+    const sponsorship = await Sponsorships.findById(req.params.id);
     if (!sponsorship) {
       return res.status(404).json({ message: "Sponsorship record not found" });
     }
@@ -1949,14 +1954,7 @@ exports.updateSponsorshipStatus = async (req, res) => {
     sponsorship.status = status;
     await sponsorship.save();
 
-    if (sponsorship.child) {
-      const isActive = ["Active", "Pending"].includes(status);
-      sponsorship.child.sponsor = isActive ? sponsorship.donor : null;
-      sponsorship.child.sponsorshipStatus = isActive
-        ? "Sponsored"
-        : "Available";
-      await sponsorship.child.save();
-    }
+    await syncChildSponsorState(sponsorship.child);
 
     res.status(200).json({
       message: "Sponsorship status updated successfully",
@@ -2046,16 +2044,6 @@ exports.reassignSponsor = async (req, res) => {
       return res.status(404).json({ message: "Child profile not found" });
     }
 
-    const currentSponsorship = await Sponsorships.findOne({
-      child: childId,
-      status: { $in: ACTIVE_SPONSORSHIP_STATUSES },
-    });
-    if (childProfile.sponsor || currentSponsorship) {
-      return res.status(409).json({
-        message: "This child already has an active sponsor.",
-      });
-    }
-
     let targetSponsor = null;
     const sponsorId = data.sponsorId || data.sponsor?._id || null;
 
@@ -2088,7 +2076,6 @@ exports.reassignSponsor = async (req, res) => {
       targetSponsor = new Sponsor({
         profile,
         sponsor: safeSponsor,
-        child: childId,
         location: data.location || {},
         donation: {
           ...(data.donation || {
@@ -2118,11 +2105,7 @@ exports.reassignSponsor = async (req, res) => {
       data,
     });
 
-    await syncChildSponsorState(
-      childId,
-      targetSponsor._id,
-      sponsorship?.status || "Active",
-    );
+    await syncChildSponsorState(childId);
 
     return res.status(200).json({
       message: "Sponsor reassigned successfully",
@@ -2147,21 +2130,34 @@ exports.unlinkChildSponsor = async (req, res) => {
       return res.status(404).json({ message: "Child profile not found" });
     }
 
-    const result = await Sponsorships.updateMany(
-      { child: childId, status: { $in: ACTIVE_SPONSORSHIP_STATUSES } },
-      { $set: { status: "Cancelled" } },
-    );
+    const sponsorshipId = String(req.body?.sponsorshipId || "");
+    if (!mongoose.isValidObjectId(sponsorshipId)) {
+      return res.status(400).json({
+        message: "A sponsorship id is required to unlink one relationship.",
+      });
+    }
 
-    const updatedChild = await Childern.findByIdAndUpdate(
-      childId,
-      { $set: { sponsor: null, sponsorshipStatus: "Available" } },
-      { new: true },
+    const sponsorship = await Sponsorships.findOneAndUpdate(
+      {
+        _id: sponsorshipId,
+        child: childId,
+        status: { $in: ACTIVE_SPONSORSHIP_STATUSES },
+      },
+      { $set: { status: "Cancelled" }, $unset: { activePairKey: "" } },
+      { new: true, runValidators: true },
     );
+    if (!sponsorship) {
+      return res.status(404).json({ message: "Active sponsorship not found." });
+    }
+
+    await syncChildSponsorState(childId);
+    const updatedChild = await Childern.findById(childId);
 
     return res.status(200).json({
-      message: "Sponsor unlinked successfully",
+      message: "Sponsorship cancelled successfully",
       child: updatedChild,
-      cancelledSponsorships: result.modifiedCount,
+      cancelledSponsorships: 1,
+      sponsorship,
       preservedHistory: true,
     });
   } catch (error) {
@@ -2170,4 +2166,16 @@ exports.unlinkChildSponsor = async (req, res) => {
       error: error.message,
     });
   }
+};
+
+const sponsorVerificationController = require("./sponsorVerificationController");
+exports.createPublicPledge =
+  sponsorVerificationController.createSponsorVerificationRequest;
+exports.createPublicStripePaymentLinkPledge = (req, res) => {
+  req.body = { ...(req.body || {}), paymentMethod: "stripe" };
+  return sponsorVerificationController.createSponsorVerificationRequest(req, res);
+};
+exports.createStripeCheckoutSession = (req, res) => {
+  req.body = { ...(req.body || {}), paymentMethod: "stripe" };
+  return sponsorVerificationController.createSponsorVerificationRequest(req, res);
 };

@@ -9,6 +9,10 @@ const { generateSponsorDueReminders } = require("./utils/notificationUtil");
 const { processSponsorReminderEmails } = require("./utils/sponsorReminderService");
 const Admin = require("./models/admin");
 const Sponsorships = require("./models/sponsorships");
+const {
+  expireSponsorVerificationRequests,
+  processSponsorVerificationDigests,
+} = require("./controllers/sponsorVerificationController");
 
 const app = express();
 const config = loadConfig();
@@ -195,6 +199,8 @@ async function runReminderChecks() {
     const results = await Promise.allSettled([
       checkSponsorReminders(),
       processSponsorReminderEmails(),
+      expireSponsorVerificationRequests(),
+      processSponsorVerificationDigests(),
     ]);
     results.forEach((result) => {
       if (result.status === "rejected") {

@@ -23,7 +23,11 @@ const sponsorsSchema = new mongoose.Schema(
       url: { type: String, default: "", trim: true },
       public_id: { type: String, default: "", trim: true },
     },
-    child: { type: mongoose.Schema.Types.ObjectId, ref: "ChildProfile" },
+    child: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ChildProfile",
+      deprecated: true,
+    },
     location: {
       address: { type: String, trim: true },
       country: { type: String, trim: true },
@@ -52,6 +56,8 @@ const sponsorsSchema = new mongoose.Schema(
       enum: ["Incomplete", "Complete"],
       default: "Incomplete",
     },
+    emailVerified: { type: Boolean, default: false, index: true },
+    emailVerifiedAt: { type: Date, default: null },
     isArchived: {
       type: Boolean,
       default: false,
@@ -75,7 +81,14 @@ const sponsorsSchema = new mongoose.Schema(
   { timestamps: true },
 );
 sponsorsSchema.index({ isArchived: 1, createdAt: -1, _id: -1 });
-sponsorsSchema.index({ child: 1, createdAt: -1, _id: -1 });
+sponsorsSchema.index(
+  { "profile.email": 1 },
+  {
+    unique: true,
+    partialFilterExpression: { emailVerified: true },
+    name: "unique_verified_sponsor_email",
+  },
+);
 const Sponsor = mongoose.model("Sponsor", sponsorsSchema);
 
 module.exports = Sponsor;

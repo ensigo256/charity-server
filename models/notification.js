@@ -21,6 +21,7 @@ const notificationsSchema = new mongoose.Schema(
         "view",
         "newsletter",
         "sponsor_due_reminder",
+        "sponsor_email_verification",
         "blog_like",
         "blog_share",
       ],

@@ -12,6 +12,12 @@ const sponsorshipsSchema = new mongoose.Schema(
       ref: "Sponsor",
       required: true,
     },
+    activePairKey: { type: String, default: undefined, select: false },
+    paymentMethod: {
+      type: String,
+      enum: ["ach", "stripe"],
+      default: undefined,
+    },
     publicPledgeReference: { type: String, trim: true },
     publicRequestId: { type: String, trim: true },
     achInstructionEmail: {
@@ -37,7 +43,7 @@ const sponsorshipsSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["Active", "Completed", "Cancelled", "Pending"],
+      enum: ["Active", "Paused", "Completed", "Cancelled", "Pending"],
       default: "Pending",
     },
     payments: [
@@ -87,6 +93,17 @@ sponsorshipsSchema.index({ status: 1, createdAt: -1, _id: -1 });
 sponsorshipsSchema.index({ publicPledgeReference: 1 }, { unique: true, sparse: true });
 sponsorshipsSchema.index({ publicRequestId: 1 }, { unique: true, sparse: true });
 sponsorshipsSchema.index({ bankReference: 1 }, { unique: true, sparse: true });
+sponsorshipsSchema.index(
+  { activePairKey: 1 },
+  { unique: true, sparse: true, name: "unique_current_sponsor_child_pair" },
+);
+sponsorshipsSchema.pre("validate", function setActivePairKey() {
+  if (["Active", "Pending"].includes(this.status) && this.child && this.donor) {
+    this.activePairKey = `${this.child}:${this.donor}`;
+  } else {
+    this.activePairKey = undefined;
+  }
+});
 const Sponsorships = mongoose.model("Sponsorships", sponsorshipsSchema);
 
 module.exports = Sponsorships;

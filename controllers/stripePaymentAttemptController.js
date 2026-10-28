@@ -321,7 +321,10 @@ exports.approveStripePaymentAttempt = async (req, res) => {
         throw error;
       }
       const sponsor = await Sponsor.findById(attempt.sponsor).session(session);
-      if (!sponsor || sponsor.paymentMethod !== "stripe") {
+      if (
+        !sponsor ||
+        (sponsorship.paymentMethod || sponsor.paymentMethod) !== "stripe"
+      ) {
         const error = new Error("The linked sponsor is not using Stripe.");
         error.statusCode = 409;
         throw error;
@@ -332,13 +335,11 @@ exports.approveStripePaymentAttempt = async (req, res) => {
       const fullyFunded = sponsorship.status !== "Pending" || nextPaid >= pledgeAmount;
       if (sponsorship.status === "Pending" && fullyFunded) {
         const child = await ChildProfile.findById(sponsorship.child).session(session);
-        if (!child || (child.sponsorshipStatus !== "Available" &&
-          child.sponsor?.toString() !== sponsor._id.toString())) {
-          const error = new Error("The child is no longer available; resolve the pledge conflict first.");
+        if (!child) {
+          const error = new Error("The child profile no longer exists.");
           error.statusCode = 409;
           throw error;
         }
-        child.sponsor = sponsor._id;
         child.sponsorshipStatus = "Sponsored";
         await child.save({ session });
         sponsorship.status = "Active";

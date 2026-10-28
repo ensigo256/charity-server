@@ -1,4 +1,5 @@
 const Profiles = require("../models/childProfile");
+const Sponsorships = require("../models/sponsorships");
 const deleteImage = require("../utils/deleteCloudImg");
 const mongoose = require("mongoose");
 const { calculateGraduation, normalizeStage } = require("../utils/educationGraduation");
@@ -130,7 +131,6 @@ exports.createChildProfile = async (req, res) => {
     const newProfile = new Profiles({
       ...payLoad,
       sponsorshipStatus: "Available",
-      sponsor: null,
     });
     await newProfile.save();
     res
@@ -194,15 +194,38 @@ exports.getProfiles = async (req, res) => {
     const pagination = getPagination(req);
     const [profiles, total] = await Promise.all([
       Profiles.find()
-        .populate("sponsor")
         .sort({ createdAt: -1, _id: -1 })
         .skip(pagination.skip)
         .limit(pagination.limit),
       Profiles.countDocuments(),
     ]);
 
+    const activeSponsorships = await Sponsorships.find({
+      child: { $in: profiles.map((profile) => profile._id) },
+      status: { $in: ["Active", "Pending"] },
+    })
+      .populate("donor")
+      .lean();
+    const sponsorshipsByChild = new Map();
+    for (const sponsorship of activeSponsorships) {
+      const childId = String(sponsorship.child);
+      const childSponsorships = sponsorshipsByChild.get(childId) || [];
+      childSponsorships.push(sponsorship);
+      sponsorshipsByChild.set(childId, childSponsorships);
+    }
+    const profilesWithSponsorships = profiles.map((profile) => {
+      const sponsorships = sponsorshipsByChild.get(String(profile._id)) || [];
+      const sponsorCount = sponsorships.length;
+      return {
+        ...profile.toObject(),
+        sponsorships,
+        sponsorCount,
+        sponsorshipStatus: sponsorCount > 0 ? "Sponsored" : "Available",
+      };
+    });
+
     setPaginationHeaders(res, { ...pagination, total });
-    res.status(200).json(profiles);
+    res.status(200).json(profilesWithSponsorships);
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
     console.log("====================================");
@@ -213,12 +236,32 @@ exports.getProfiles = async (req, res) => {
 
 exports.getPublicProfiles = async (_req, res) => {
   try {
-    const profiles = await Profiles.find({ sponsorshipStatus: "Available" })
+    const profiles = await Profiles.find({
+      sponsorshipStatus: { $in: ["Available", "Sponsored"] },
+    })
       .select(PUBLIC_PROFILE_FIELDS)
       .sort({ createdAt: -1, _id: -1 })
       .lean();
 
-    return res.status(200).json(profiles);
+    const sponsorshipCounts = await Sponsorships.aggregate([
+      {
+        $match: {
+          child: { $in: profiles.map((profile) => profile._id) },
+          status: { $in: ["Active", "Pending"] },
+        },
+      },
+      { $group: { _id: "$child", count: { $sum: 1 } } },
+    ]);
+    const countsByChild = new Map(
+      sponsorshipCounts.map((item) => [String(item._id), item.count]),
+    );
+
+    return res.status(200).json(
+      profiles.map((profile) => ({
+        ...profile,
+        sponsorCount: countsByChild.get(String(profile._id)) || 0,
+      })),
+    );
   } catch (error) {
     return res.status(500).json({ message: "Unable to load profiles" });
   }
@@ -248,11 +291,19 @@ exports.deleteChildProfile = async (req, res) => {
 
 exports.getChildProfileById = async (req, res) => {
   try {
-    const profile = await Profiles.findById(req.params.id).populate("sponsor");
+    const profile = await Profiles.findById(req.params.id);
     if (!profile) {
       return res.status(404).json({ message: "Child profile not found" });
     }
-    res.status(200).json(profile);
+    const sponsorCount = await Sponsorships.countDocuments({
+      child: profile._id,
+      status: { $in: ["Active", "Pending"] },
+    });
+    res.status(200).json({
+      ...profile.toObject(),
+      sponsorCount,
+      sponsorshipStatus: sponsorCount > 0 ? "Sponsored" : "Available",
+    });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
     console.log("====================================");
@@ -269,7 +320,7 @@ exports.getPublicChildProfileById = async (req, res) => {
 
     const profile = await Profiles.findOne({
       _id: req.params.id,
-      sponsorshipStatus: "Available",
+      sponsorshipStatus: { $in: ["Available", "Sponsored"] },
     })
       .select(PUBLIC_PROFILE_FIELDS)
       .lean();
@@ -278,7 +329,11 @@ exports.getPublicChildProfileById = async (req, res) => {
       return res.status(404).json({ message: "Child profile not found" });
     }
 
-    return res.status(200).json(profile);
+    const sponsorCount = await Sponsorships.countDocuments({
+      child: profile._id,
+      status: { $in: ["Active", "Pending"] },
+    });
+    return res.status(200).json({ ...profile, sponsorCount });
   } catch (error) {
     return res.status(500).json({ message: "Unable to load profile" });
   }

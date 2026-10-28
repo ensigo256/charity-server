@@ -83,7 +83,8 @@ async function getValidPaymentPageToken(token) {
 
   if (
     !tokenRecord?.sponsorship ||
-    tokenRecord.sponsorship.donor?.paymentMethod !== "stripe" ||
+    (tokenRecord.sponsorship.paymentMethod ||
+      tokenRecord.sponsorship.donor?.paymentMethod) !== "stripe" ||
     !["Active", "Pending"].includes(tokenRecord.sponsorship.status)
   ) {
     return null;

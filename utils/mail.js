@@ -437,6 +437,46 @@ async function sendNewsletterWelcomeEmail({
   });
 }
 
+async function sendSponsorVerificationEmail({ email, name, token, requestId }) {
+  const brand = getBrandConfig();
+  const verificationUrl = new URL("/verify-sponsor", brand.websiteUrl);
+  const isLocalHttp =
+    process.env.NODE_ENV !== "production" &&
+    verificationUrl.protocol === "http:" &&
+    ["localhost", "127.0.0.1"].includes(verificationUrl.hostname.toLowerCase());
+  if (
+    (verificationUrl.protocol !== "https:" && !isLocalHttp) ||
+    verificationUrl.username ||
+    verificationUrl.password
+  ) {
+    throw new Error("WEBSITE_URL must be HTTPS for sponsor email verification.");
+  }
+  verificationUrl.hash = new URLSearchParams({ token, requestId }).toString();
+  const safeName = escapeHtml(name || "friend");
+  const safeOrgName = escapeHtml(brand.orgName);
+  const safeUrl = escapeHtml(verificationUrl.toString());
+
+  return sendEmail({
+    to: email,
+    subject: `Verify your email for ${brand.orgName} sponsorship`,
+    html: `<p>Hello ${safeName},</p><p>Verify your email to continue your sponsorship request with ${safeOrgName}.</p><p><a href="${safeUrl}">Verify email and continue</a></p><p>This one-time link expires in 24 hours. If you did not make this request, you can ignore this message.</p>`,
+    text: `Hello ${name || "friend"},\n\nVerify your email to continue your sponsorship request with ${brand.orgName}:\n${verificationUrl.toString()}\n\nThis one-time link expires in 24 hours. If you did not make this request, you can ignore this message.`,
+  });
+}
+
+async function sendSponsorPaymentContinuationEmail({ email, name, paymentUrl }) {
+  const brand = getBrandConfig();
+  const safeName = escapeHtml(name || "friend");
+  const safeOrgName = escapeHtml(brand.orgName);
+  const safeUrl = escapeHtml(paymentUrl);
+  return sendEmail({
+    to: email,
+    subject: `Continue your sponsorship pledge with ${brand.orgName}`,
+    html: `<p>Hello ${safeName},</p><p>Your sponsor details have been reviewed. Continue your sponsorship pledge with ${safeOrgName} using the secure payment page below.</p><p><a href="${safeUrl}">Continue to payment</a></p>`,
+    text: `Hello ${name || "friend"},\n\nYour sponsor details have been reviewed. Continue your sponsorship pledge with ${brand.orgName} using this secure payment page:\n${paymentUrl}`,
+  });
+}
+
 module.exports = {
   buildAchInstructionsEmail,
   buildSponsorReminderEmail,
@@ -447,4 +487,6 @@ module.exports = {
   sendContactEmails,
   sendReplyEmail,
   sendNewsletterWelcomeEmail,
+  sendSponsorVerificationEmail,
+  sendSponsorPaymentContinuationEmail,
 };

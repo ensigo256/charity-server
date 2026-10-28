@@ -5,12 +5,9 @@ const { body, param } = require("express-validator");
 const { validateRequest } = require("../middleware/validate");
 const {
   createSponsor,
-  createPublicPledge,
-  createPublicStripePaymentLinkPledge,
   retryPublicAchInstructionEmail,
   getPendingPublicAchPledges,
   getPendingPublicStripePledges,
-  createStripeCheckoutSession,
   confirmPublicAchPledge,
   confirmPublicStripePledge,
   cancelPublicPledge,
@@ -28,7 +25,20 @@ const {
   recordSplitPayment,
   checkSponsorReminderNotifications,
 } = require("../controllers/sponsorControllers");
+const {
+  createSponsorVerificationRequest,
+  getPendingSponsorVerificationRequests,
+  recordSponsorVerificationFollowUp,
+  resendPublicVerificationEmail,
+  resendSponsorVerificationRequest,
+  resolveSponsorIdentityReview,
+  verifySponsorEmail,
+} = require("../controllers/sponsorVerificationController");
 const { requireAuth, requirePermission, requireRole } = require("../middleware/auth");
+const forceStripePaymentMethod = (req, _res, next) => {
+  req.body = { ...(req.body || {}), paymentMethod: "stripe" };
+  next();
+};
 const { getAchSettings, updateAchSettings } = require("../controllers/achSettingsController");
 const {
   getStripePaymentPage,
@@ -63,6 +73,20 @@ const stripePaymentAttemptLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: "Too many checkout attempts. Please try again later." },
 });
+const sponsorVerificationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many verification attempts. Please try again later." },
+});
+const sponsorVerificationResendLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many resend requests. Please try again later." },
+});
 const splitPaymentFields = [
   body("amount").isInt({ min: 1, max: 1000000 }),
   body("currency").optional().matches(/^[A-Z]{3}$/),
@@ -77,8 +101,24 @@ const splitPaymentFields = [
   body("allocations.*.amount").isInt({ min: 1, max: 1000000 }),
 ];
 
-router.post("/public/pledges", publicPledgeLimiter, createPublicPledge);
-router.post("/stripe/payment-link-pledges", publicPledgeLimiter, createPublicStripePaymentLinkPledge);
+router.post("/public/verification-requests", publicPledgeLimiter, createSponsorVerificationRequest);
+router.post(
+  "/public/verification-requests/resend",
+  sponsorVerificationResendLimiter,
+  resendPublicVerificationEmail,
+);
+router.post(
+  "/public/verification-requests/verify",
+  sponsorVerificationLimiter,
+  verifySponsorEmail,
+);
+router.post("/public/pledges", publicPledgeLimiter, createSponsorVerificationRequest);
+router.post(
+  "/stripe/payment-link-pledges",
+  publicPledgeLimiter,
+  forceStripePaymentMethod,
+  createSponsorVerificationRequest,
+);
 router.get("/stripe/payment-pages/:token", getStripePaymentPage);
 router.post(
   "/stripe/payment-pages/:token/attempts",
@@ -88,7 +128,41 @@ router.post(
 router.post(
   "/stripe/create-session",
   stripeCheckoutSessionLimiter,
-  createStripeCheckoutSession,
+  forceStripePaymentMethod,
+  createSponsorVerificationRequest,
+);
+router.get(
+  "/public/verification-requests/pending",
+  requireAuth,
+  requirePermission("sponsorships.view"),
+  getPendingSponsorVerificationRequests,
+);
+router.post(
+  "/public/verification-requests/:id/resend",
+  requireAuth,
+  requirePermission("sponsorships.manage"),
+  param("id").isMongoId(),
+  validateRequest,
+  resendSponsorVerificationRequest,
+);
+router.patch(
+  "/public/verification-requests/:id/follow-up",
+  requireAuth,
+  requirePermission("sponsorships.manage"),
+  param("id").isMongoId(),
+  body("note").isString().trim().isLength({ min: 1, max: 1000 }),
+  validateRequest,
+  recordSponsorVerificationFollowUp,
+);
+router.post(
+  "/public/verification-requests/:id/resolve-identity",
+  requireAuth,
+  requirePermission("sponsorships.manage"),
+  param("id").isMongoId(),
+  body("action").isIn(["link_existing", "reject"]),
+  body("sponsorId").optional().isMongoId(),
+  validateRequest,
+  resolveSponsorIdentityReview,
 );
 router.get("/settings/ach", requireAuth, requireRole("admin"), getAchSettings);
 router.put("/settings/ach", requireAuth, requireRole("admin"), updateAchSettings);
