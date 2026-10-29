@@ -6,6 +6,8 @@ const {
   createBlog,
   getBlogById,
   getBlogs,
+  getPublishedBlogs,
+  getPublishedBlogById,
   deleteBlog,
   updateBlog,
   publishBlog,
@@ -32,7 +34,10 @@ const blogFields = [
   body("author").trim().isLength({ min: 1, max: 120 }),
   body("category").trim().isLength({ min: 1, max: 80 }),
   body("status").optional().isIn(["draft", "published"]),
-  body("videoId").optional({ values: "falsy" }).isString().isLength({ max: 200 }),
+  body("videoId")
+    .optional({ values: "falsy" })
+    .isString()
+    .isLength({ max: 200 }),
   body("imageUrl")
     .optional({ values: "falsy" })
     .isURL({ protocols: ["http", "https"], require_protocol: true }),
@@ -40,7 +45,10 @@ const blogFields = [
   body("image.url")
     .optional({ values: "falsy" })
     .isURL({ protocols: ["http", "https"], require_protocol: true }),
-  body("image.public_id").optional({ values: "falsy" }).isString().isLength({ max: 255 }),
+  body("image.public_id")
+    .optional({ values: "falsy" })
+    .isString()
+    .isLength({ max: 255 }),
 ];
 
 router.post(
@@ -52,13 +60,10 @@ router.post(
   createBlog,
 );
 
-router.get("/all", getBlogs);
-
-router.get(
-  "/:id",
-
-  getBlogById,
-);
+router.get("/published", getPublishedBlogs);
+router.get("/published/:id", getPublishedBlogById);
+router.get("/all", requireAuth, requirePermission("blogs.view"), getBlogs);
+router.get("/:id", requireAuth, requirePermission("blogs.view"), getBlogById);
 
 router.delete(
   "/delete/:id",
@@ -88,7 +93,9 @@ router.post(
   "/:blogId/toggle-like",
   publicInteractionLimiter,
   param("blogId").isMongoId(),
-  body("uuid").custom(isValidPublicInteractionId).withMessage("A valid interaction ID is required."),
+  body("uuid")
+    .custom(isValidPublicInteractionId)
+    .withMessage("A valid interaction ID is required."),
   validateRequest,
   likeToggle,
 );
@@ -97,7 +104,9 @@ router.post(
   "/:blogId/log-share",
   publicInteractionLimiter,
   param("blogId").isMongoId(),
-  body("uuid").custom(isValidPublicInteractionId).withMessage("A valid interaction ID is required."),
+  body("uuid")
+    .custom(isValidPublicInteractionId)
+    .withMessage("A valid interaction ID is required."),
   validateRequest,
   shareToggle,
 );
@@ -106,7 +115,9 @@ router.post(
   "/:blogId/log-view",
   publicInteractionLimiter,
   param("blogId").isMongoId(),
-  body("uuid").custom(isValidPublicInteractionId).withMessage("A valid interaction ID is required."),
+  body("uuid")
+    .custom(isValidPublicInteractionId)
+    .withMessage("A valid interaction ID is required."),
   validateRequest,
   saveViews,
 );
