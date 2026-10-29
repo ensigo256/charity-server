@@ -31,6 +31,23 @@ test("drops engagement, feature, and publication fields from blog updates", () =
   assert.deepEqual(update, { title: "New title" });
 });
 
+test("uploaded image takes precedence over an empty imageUrl", () => {
+  const update = buildBlogUpdate({
+    imageUrl: "",
+    image: {
+      url: "https://res.cloudinary.com/example/image/upload/v2/replacement.jpg",
+      public_id: "replacement",
+    },
+  });
+
+  assert.deepEqual(update, {
+    image: {
+      url: "https://res.cloudinary.com/example/image/upload/v2/replacement.jpg",
+      public_id: "replacement",
+    },
+  });
+});
+
 test("does not replace the stored image when an update omits image fields", () => {
   assert.deepEqual(buildBlogUpdate({ title: "Text-only edit" }), {
     title: "Text-only edit",

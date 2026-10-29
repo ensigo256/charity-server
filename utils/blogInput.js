@@ -15,9 +15,23 @@ function buildBlogUpdate(data = {}) {
       .map((field) => [field, data[field]]),
   );
 
-  if (Object.prototype.hasOwnProperty.call(data, "imageUrl")) {
-    update.image = { url: data.imageUrl, public_id: "" };
-  } else if (Object.prototype.hasOwnProperty.call(data, "image")) {
+  if (
+    data.image &&
+    typeof data.image === "object" &&
+    typeof data.image.url === "string" &&
+    data.image.url.trim()
+  ) {
+    update.image = data.image;
+  } else if (
+    typeof data.imageUrl === "string" &&
+    data.imageUrl.trim()
+  ) {
+    update.image = { url: data.imageUrl.trim(), public_id: "" };
+  } else if (
+    Object.prototype.hasOwnProperty.call(data, "image") &&
+    data.image &&
+    typeof data.image === "object"
+  ) {
     update.image = data.image;
   }
 
