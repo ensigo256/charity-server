@@ -16,6 +16,10 @@ function generateToken() {
   return crypto.randomBytes(24).toString('hex');
 }
 
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
 function requireDatabase() {
   if (mongoose.connection.readyState !== 1) {
     const error = new Error('Newsletter service is temporarily unavailable.');
@@ -33,32 +37,33 @@ function publicSubscriber(subscriber) {
   };
 }
 
-async function sendVerificationEmail(subscriber, verificationToken) {
+async function sendVerificationEmail(subscriber, verificationToken, unsubscribeToken) {
   await sendNewsletterWelcomeEmail({
     email: subscriber.email,
     name: subscriber.name,
     verificationToken,
-    unsubscribeToken: subscriber.unsubscribeToken,
+    unsubscribeToken,
   });
 }
 
 async function issueVerification(subscriber) {
   const verificationToken = generateToken();
+  const unsubscribeToken = generateToken();
   const updatedSubscriber = await Subscriber.findByIdAndUpdate(
     subscriber._id,
     {
       status: 'pending',
       verified: false,
-      verificationToken,
+      verificationToken: hashToken(verificationToken),
       verificationTokenExpiresAt: new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS),
-      unsubscribeToken: subscriber.unsubscribeToken || generateToken(),
+      unsubscribeToken: hashToken(unsubscribeToken),
       lastEmailSentAt: new Date(),
     },
     { new: true, runValidators: true },
   );
 
   try {
-    await sendVerificationEmail(updatedSubscriber, verificationToken);
+    await sendVerificationEmail(updatedSubscriber, verificationToken, unsubscribeToken);
   } catch (error) {
     console.error('Newsletter verification email failed:', error.message);
     const deliveryError = new Error('Subscription saved, but the verification email could not be sent. Please try again later.');
@@ -94,7 +99,7 @@ exports.subscribeToNewsletter = async (req, res) => {
       name: name || email.split('@')[0],
       status: 'pending',
       verified: false,
-      unsubscribeToken: generateToken(),
+      unsubscribeToken: hashToken(generateToken()),
       unsubscribed: false,
       unsubscribedAt: null,
       subscribedOn: new Date(),
@@ -150,9 +155,10 @@ exports.unsubscribeFromNewsletter = async (req, res) => {
 
     const token = String(req.params?.token || '').trim();
     if (!token) return res.status(400).json({ message: 'A valid unsubscribe token is required.' });
+    const tokenHash = hashToken(token);
 
     const subscriber = await Subscriber.findOneAndUpdate(
-      { unsubscribeToken: token },
+      { $or: [{ unsubscribeToken: tokenHash }, { unsubscribeToken: token }] },
       { status: 'unsubscribed', unsubscribed: true, unsubscribedAt: new Date() },
       { new: true, runValidators: true },
     );
@@ -175,9 +181,10 @@ exports.verifyNewsletterSubscription = async (req, res) => {
 
     const token = String(req.params?.token || '').trim();
     if (!token) return res.status(400).json({ message: 'Verification token is required.' });
+    const tokenHash = hashToken(token);
 
     const subscriber = await Subscriber.findOne({
-      verificationToken: token,
+      $or: [{ verificationToken: tokenHash }, { verificationToken: token }],
       verificationTokenExpiresAt: { $gt: new Date() },
     });
 

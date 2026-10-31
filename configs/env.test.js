@@ -25,14 +25,14 @@ test("allowed origins must be exact HTTP(S) origins without paths", () => {
   }
 });
 
-test("configured allowlist combines CLIENT_URL and comma-separated ALLOWED_ORIGINS", () => {
+test("configured allowlist only uses ALLOWED_ORIGINS", () => {
   assert.deepEqual(
     getAllowedOrigins({
       CLIENT_URL: "https://client.example.org/",
       ALLOWED_ORIGINS: "https://one.example.org, https://two.example.org",
       NODE_ENV: "production",
     }),
-    ["https://client.example.org", "https://one.example.org", "https://two.example.org"],
+    ["https://one.example.org", "https://two.example.org"],
   );
 });
 

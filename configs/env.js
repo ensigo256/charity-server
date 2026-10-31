@@ -24,7 +24,7 @@ function parseOrigins(value, isProduction = false) {
       parsed.pathname !== "/" ||
       parsed.search ||
       parsed.hash ||
-      (isProduction && parsed.protocol !== "https:")
+      (isProduction && parsed.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname))
     ) {
       throw new Error(`ALLOWED_ORIGINS must contain exact${isProduction ? " HTTPS" : " HTTP(S)"} origins: ${origin}`);
     }
@@ -35,9 +35,7 @@ function parseOrigins(value, isProduction = false) {
 }
 
 function getAllowedOrigins(env = process.env) {
-  const configuredOrigins = [env.CLIENT_URL, env.ALLOWED_ORIGINS]
-    .filter((value) => String(value || "").trim())
-    .join(",");
+  const configuredOrigins = env.ALLOWED_ORIGINS || "";
   return parseOrigins(configuredOrigins, env.NODE_ENV === "production");
 }
 

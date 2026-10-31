@@ -27,7 +27,13 @@ const {
 
 router.get('/subscribers', requireAuth, requirePermission('newsletter.view'), getNewsletterSubscribers);
 
-router.get('/verify/:token', verifyNewsletterSubscription);
+router.post(
+  '/verify/:token',
+  [
+    param('token').isHexadecimal().isLength({ min: 48, max: 48 }).withMessage('A valid verification token is required.'),
+  ],
+  verifyNewsletterSubscription,
+);
 
 router.post(
   '/subscribe',
@@ -51,7 +57,7 @@ router.post(
 router.post(
   '/unsubscribe/:token',
   [
-    param('token').isHexadecimal().isLength({ min: 48, max: 48 }).withMessage('A valid unsubscribe token is required.'),
+    param('token').isHexadecimal().isLength({ min: 48, max: 64 }).withMessage('A valid unsubscribe token is required.'),
   ],
   unsubscribeFromNewsletter,
 );

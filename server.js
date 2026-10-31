@@ -19,8 +19,15 @@ const config = loadConfig();
 const PORT = config.port;
 app.set("trust proxy", config.trustProxyHops);
 
+const allowedOrigins = new Set(config.allowedOrigins);
 const corsOptions = {
-  origin: true, // allow all origins for local dev
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(null, false);
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: [
@@ -33,25 +40,6 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", req.headers.origin || "*");
-  res.header("Access-Control-Allow-Credentials", "true");
-  res.header(
-    "Access-Control-Allow-Methods",
-    "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-  );
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization"
-  );
-
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
-  }
-
-  return next();
-});
 
 // Security middleware
 //app.use(
@@ -67,6 +55,7 @@ const limiter = rateLimit({
   message: "Too many requests from this IP, please try again later.",
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.method === "GET",
 });
 app.use(limiter);
 
