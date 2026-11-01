@@ -960,6 +960,13 @@ exports.confirmPublicAchPledge = async (req, res) => {
       sponsorship.bankReference =
         sponsorship.bankReference || normalizedReference;
       sponsorship.status = funding.fullyFunded ? "Active" : "Pending";
+      sponsorship.achApproval = {
+        status: "approved",
+        submittedAt: sponsorship.achApproval?.submittedAt || new Date(),
+        reviewedAt: new Date(),
+        reviewedBy: req.admin?.id,
+        reviewNotes: String(notes).trim(),
+      };
       sponsorship.totalPaid = funding.totalPaid;
       sponsorship.lastPayment = receivedDate;
       if (funding.fullyFunded) {

@@ -31,6 +31,17 @@ const sponsorshipsSchema = new mongoose.Schema(
       sentAt: { type: Date, default: null },
       lastError: { type: String, trim: true, default: "" },
     },
+    achApproval: {
+      status: {
+        type: String,
+        enum: ["not_submitted", "submitted", "approved", "rejected"],
+        default: "not_submitted",
+      },
+      submittedAt: { type: Date, default: null },
+      reviewedAt: { type: Date, default: null },
+      reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin", default: null },
+      reviewNotes: { type: String, trim: true, maxlength: 1000, default: "" },
+    },
     bankReference: { type: String, trim: true },
     startDate: { type: Date, required: true },
     endDate: { type: Date },

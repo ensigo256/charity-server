@@ -2,41 +2,28 @@ const AchSettings = require("../models/achSettings");
 const { decryptAchSettings, encryptAchSettings } = require("../utils/achSettingsCrypto");
 
 const SETTINGS_ID = "organization-ach";
-const SECRET_FIELDS = ["routingNumber", "accountNumber"];
+const DEFAULT_SPONSOR_MESSAGE =
+  "Thank you for your support and kindness. Please contact {recipientEmail} to begin the payment process.";
 
 function publicSettings(settings) {
   return {
     configured: Boolean(settings),
-    beneficiaryName: settings?.beneficiaryName || "",
-    bankName: settings?.bankName || "",
-    accountType: settings?.accountType || "",
-    referenceInstructions: settings?.referenceInstructions || "",
-    routingNumberMasked: settings?.routingNumber
-      ? `Ending in ${settings.routingNumber.slice(-4)}`
-      : "",
-    accountNumberLast4: settings?.accountNumber?.slice(-4) || "",
+    recipientEmail: settings?.recipientEmail || "",
+    sponsorMessage: settings?.sponsorMessage || DEFAULT_SPONSOR_MESSAGE,
   };
 }
 
 function validateSettings(settings) {
   const normalized = {
-    beneficiaryName: String(settings.beneficiaryName || "").trim(),
-    bankName: String(settings.bankName || "").trim(),
-    routingNumber: String(settings.routingNumber || "").trim(),
-    accountNumber: String(settings.accountNumber || "").trim(),
-    accountType: String(settings.accountType || "").trim().toLowerCase(),
-    referenceInstructions: String(settings.referenceInstructions || "").trim(),
+    recipientEmail: String(settings.recipientEmail || "").trim().toLowerCase(),
+    sponsorMessage: String(settings.sponsorMessage || "").trim() || DEFAULT_SPONSOR_MESSAGE,
   };
 
   if (
-    normalized.beneficiaryName.length < 2 || normalized.beneficiaryName.length > 120 ||
-    normalized.bankName.length < 2 || normalized.bankName.length > 120 ||
-    !/^\d{9}$/.test(normalized.routingNumber) ||
-    !/^\d{4,17}$/.test(normalized.accountNumber) ||
-    !["checking", "savings"].includes(normalized.accountType) ||
-    normalized.referenceInstructions.length < 5 || normalized.referenceInstructions.length > 2000
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized.recipientEmail) ||
+    normalized.sponsorMessage.length > 4000
   ) {
-    const error = new Error("Please provide valid ACH beneficiary, bank, account, and transfer instruction details.");
+    const error = new Error("Please provide a valid ACH recipient email and sponsor message.");
     error.statusCode = 400;
     throw error;
   }
@@ -62,15 +49,9 @@ exports.updateAchSettings = async (req, res) => {
     const existing = await readStoredSettings();
     const incoming = req.body || {};
     const merged = { ...(existing || {}) };
-    for (const field of ["beneficiaryName", "bankName", "accountType", "referenceInstructions"]) {
+    for (const field of ["recipientEmail", "sponsorMessage"]) {
       if (incoming[field] !== undefined) merged[field] = incoming[field];
     }
-    for (const field of SECRET_FIELDS) {
-      if (incoming[field] !== undefined && String(incoming[field]).trim()) {
-        merged[field] = incoming[field];
-      }
-    }
-
     const settings = validateSettings(merged);
     const encryptedValue = encryptAchSettings(settings);
     await AchSettings.findByIdAndUpdate(

@@ -4,10 +4,10 @@ const ChildProfile = require("../models/childProfile");
 const Sponsor = require("../models/sponsor");
 const Sponsorships = require("../models/sponsorships");
 const SponsorVerificationRequest = require("../models/sponsorVerificationRequest");
-const AchSettings = require("../models/achSettings");
 const Admin = require("../models/admin");
 const Notification = require("../models/notification");
 const { getPagination, setPaginationHeaders } = require("../utils/pagination");
+const { readStoredSettings } = require("./achSettingsController");
 const {
   sendSponsorPaymentContinuationEmail,
   sendSponsorVerificationEmail,
@@ -149,8 +149,11 @@ async function queueRequest(body) {
   if (!child) {
     throw setHttpError(409, "This child is no longer available.");
   }
-  if (paymentMethod === "ach" && !(await AchSettings.exists({ _id: "organization-ach" }))) {
-    throw setHttpError(503, "Manual bank transfer instructions are not configured yet.");
+  if (paymentMethod === "ach") {
+    const achSettings = await readStoredSettings();
+    if (!achSettings?.recipientEmail) {
+      throw setHttpError(503, "Manual bank transfer instructions are not configured yet.");
+    }
   }
   if (paymentMethod === "stripe") {
     const stripeLink = await getConfiguredPaymentLink();
@@ -306,8 +309,11 @@ async function createVerifiedSponsorship(request, sponsor, session) {
     status: "Pending",
     payments: [],
     ...(request.paymentMethod === "ach"
-      ? { achInstructionEmail: { status: "pending", attempts: 0 } }
-      : {}),
+    ? {
+        achInstructionEmail: { status: "pending", attempts: 0 },
+        achApproval: { status: "submitted", submittedAt: new Date() },
+      }
+    : {}),
     totalPaid: 0,
     notes: `Public ${request.paymentMethod.toUpperCase()} pledge; awaiting payment verification.`,
   });

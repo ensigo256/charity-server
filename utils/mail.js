@@ -141,7 +141,11 @@ function buildAchInstructionsEmail({ name, pledge, settings } = {}) {
   const safeReference = escapeHtml(pledge.reference);
   const safeAmount = escapeHtml(`${pledge.currency || "USD"} ${Number(pledge.amount).toFixed(2)}`);
   const safePeriod = escapeHtml(pledge.period || "sponsorship");
-  const safeInstructions = escapeHtml(settings.referenceInstructions).replace(/\n/g, "<br />");
+  const recipientEmail = String(settings.recipientEmail || "").trim();
+  const safeRecipientEmail = escapeHtml(recipientEmail);
+  const message = String(settings.sponsorMessage || "")
+    .replace(/\{recipientEmail\}/g, recipientEmail);
+  const safeMessage = escapeHtml(message).replace(/\n/g, "<br />");
   const supportEmail = String(process.env.CONTACT_RECIPIENT || "").trim();
   const safeSupportEmail = escapeHtml(supportEmail);
   const html = `
@@ -150,17 +154,11 @@ function buildAchInstructionsEmail({ name, pledge, settings } = {}) {
         <div style="background:#145c3a;padding:24px;text-align:center;color:#fff;font-size:21px;font-weight:700;">${safeOrgName}</div>
         <div style="padding:30px;line-height:1.65;">
           <p>Hello ${safeName},</p>
-          <h1 style="font-size:23px;color:#174d35;">Your manual bank transfer instructions</h1>
-          <p>We received your sponsorship pledge for ${safeAmount} (${safePeriod}). The pledge is pending until our team verifies the funds in the organization&apos;s bank account.</p>
-          <p><strong>Use this pledge reference with your transfer:</strong><br /><span style="font-family:monospace;font-size:18px;">${safeReference}</span></p>
-          <dl>
-            <dt>Beneficiary</dt><dd>${escapeHtml(settings.beneficiaryName)}</dd>
-            <dt>Bank</dt><dd>${escapeHtml(settings.bankName)}</dd>
-            <dt>Routing number</dt><dd>${escapeHtml(settings.routingNumber)}</dd>
-            <dt>Account number</dt><dd>${escapeHtml(settings.accountNumber)}</dd>
-            <dt>Account type</dt><dd>${escapeHtml(settings.accountType)}</dd>
-          </dl>
-          <p>${safeInstructions}</p>
+          <h1 style="font-size:23px;color:#174d35;">Your ACH sponsorship pledge</h1>
+          <p>${safeMessage}</p>
+          <p>Contact: <a href="mailto:${safeRecipientEmail}">${safeRecipientEmail}</a></p>
+          <p>We received your sponsorship pledge for ${safeAmount} (${safePeriod}). The pledge remains pending until our team reviews and approves the payment.</p>
+          <p><strong>Include this pledge reference when contacting us:</strong><br /><span style="font-family:monospace;font-size:18px;">${safeReference}</span></p>
           <p>Never email or share your bank password, online banking login, or one-time security codes. Contact us if you did not request these instructions.</p>
           ${supportEmail ? `<p>Questions? Contact <a href="mailto:${safeSupportEmail}">${safeSupportEmail}</a>.</p>` : ""}
           <p>With gratitude,<br /><strong>${safeOrgName}</strong></p>
@@ -170,22 +168,17 @@ function buildAchInstructionsEmail({ name, pledge, settings } = {}) {
   const text = [
     `Hello ${name || "Sponsor"},`,
     "",
-    "Your manual bank transfer instructions",
-    `We received your sponsorship pledge for ${pledge.currency || "USD"} ${Number(pledge.amount).toFixed(2)} (${pledge.period}). It remains pending until our team verifies receipt.`,
+    "Your ACH sponsorship pledge",
+    message,
+    `Contact: ${recipientEmail}`,
+    `We received your sponsorship pledge for ${pledge.currency || "USD"} ${Number(pledge.amount).toFixed(2)} (${pledge.period}). It remains pending until our team reviews and approves the payment.`,
     `Pledge reference: ${pledge.reference}`,
-    `Beneficiary: ${settings.beneficiaryName}`,
-    `Bank: ${settings.bankName}`,
-    `Routing number: ${settings.routingNumber}`,
-    `Account number: ${settings.accountNumber}`,
-    `Account type: ${settings.accountType}`,
-    "",
-    settings.referenceInstructions,
     "",
     "Never email or share your bank password, online banking login, or one-time security codes.",
     ...(supportEmail ? [`Questions? Contact ${supportEmail}.`] : []),
     `\n${brand.orgName}`,
   ].join("\n");
-  return { subject: "Your sponsorship bank transfer instructions", html, text };
+  return { subject: "Your ACH sponsorship payment instructions", html, text };
 }
 
 async function sendAchInstructionsEmail({ email, name, pledge, settings }) {
